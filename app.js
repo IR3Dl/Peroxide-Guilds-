@@ -1,5 +1,5 @@
 /* Peroxide Guilds - integração Supabase */
-const SUPABASE_URL = "https://maujnpnpebizpfhmygea.supabase.com";
+const SUPABASE_URL = "https://maujnpnpebizpfhmygea.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_WPptMrzrVRGhX5y_8dcmLw_fDUz2U6X";
 const SUPREME_EMAIL = "guilhermetrrs14@gmail.com";
 const ADMIN_EMAIL = "mutanoegamer@gmail.com";

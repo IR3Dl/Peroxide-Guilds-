@@ -582,21 +582,39 @@ footer {
   </div>
 </div>
 
-<!-- PERFIL -->
+<!-- PERFIL PÚBLICO -->
 <div class="modal" id="profileModal">
   <div class="modal-box">
     <div class="modal-heading">
-      <h2>Escolha seu nome público</h2>
+      <h2>Meu perfil</h2>
       <button class="close-btn" onclick="closeModal('profileModal')">×</button>
     </div>
     <form id="profileForm">
+      <label>Foto de perfil</label>
+      <img id="profileImagePreview" class="preview" src="profile-default.png">
+      <input type="file" id="profileImage" accept="image/*">
+
       <label>Nome de usuário</label>
       <input id="publicUsername" type="text" maxlength="30" minlength="3" placeholder="Ex: Rukia2004" required>
+
+      <label>Descrição do perfil</label>
+      <textarea id="publicBio" maxlength="180" placeholder="Conte um pouco sobre você..."></textarea>
+
       <div class="modal-actions">
-        <button type="submit" class="save-btn">Salvar nome</button>
+        <button type="submit" class="save-btn">Salvar perfil</button>
       </div>
-      <p class="small-note">Este nome será mostrado nas suas publicações.</p>
     </form>
+  </div>
+</div>
+
+<!-- MINI PERFIL -->
+<div class="modal" id="miniProfileModal">
+  <div class="modal-box">
+    <div class="modal-heading">
+      <h2>Perfil</h2>
+      <button class="close-btn" onclick="closeModal('miniProfileModal')">×</button>
+    </div>
+    <div id="miniProfileContent" style="text-align:center"></div>
   </div>
 </div>
 

@@ -62,3 +62,21 @@ drop trigger if exists sync_guild_like_count on public.guild_likes;
 create trigger sync_guild_like_count
 after insert or delete on public.guild_likes
 for each row execute function public.sync_guild_like_count();
+
+alter table public.profiles
+  add column if not exists avatar_url text,
+  add column if not exists bio text;
+
+insert into storage.buckets(id, name, public)
+values ('profile-images','profile-images',true)
+on conflict (id) do update set public = true;
+
+create policy "public read profile images" on storage.objects
+for select using (bucket_id = 'profile-images');
+
+create policy "users manage own profile images" on storage.objects
+for insert to authenticated
+with check (
+  bucket_id = 'profile-images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);

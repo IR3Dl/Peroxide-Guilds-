@@ -15,6 +15,7 @@ let profile = null;
 let mineOnly = false;
 let displayedCount = 10;
 let likedGuildIds = new Set();
+let selectedProfileImage = null;
 
 const guildList = document.getElementById("guildList");
 
@@ -29,6 +30,11 @@ function openLogin() {
 
 function openProfile() {
   document.getElementById("profileModal").style.display = "flex";
+  if (!profile) return;
+  document.getElementById("publicUsername").value = profile.username || "";
+  document.getElementById("publicBio").value = profile.bio || "";
+  document.getElementById("profileImagePreview").src = profile.avatar_url || "profile-default.png";
+  selectedProfileImage = null;
 }
 
 async function loginWithGoogle() {
@@ -72,6 +78,12 @@ async function refreshSession() {
     mineButton.textContent = mineOnly ? "Todas as guildas" : "Minhas publicações";
     mineButton.onclick = toggleMine;
     titleActions.insertBefore(mineButton, titleActions.querySelector(".add-btn"));
+
+    const profileButton = document.createElement("button");
+    profileButton.className = "mine-button dynamic-account-btn";
+    profileButton.textContent = "Meu perfil";
+    profileButton.onclick = openProfile;
+    titleActions.insertBefore(profileButton, titleActions.querySelector(".add-btn"));
 
     if (isAdmin()) {
       const adminButton = document.createElement("button");
@@ -132,14 +144,27 @@ function resetImagePreview() {
 }
 
 document.getElementById("profileForm")?.addEventListener("submit", async event => {
+  event.preventEvent?.();
   event.preventDefault();
+  if (!session) return openLogin();
+
   const username = document.getElementById("publicUsername").value.trim();
+  const bio = document.getElementById("publicBio").value.trim();
   if (username.length < 3) return alert("Use pelo menos 3 caracteres.");
 
-  const { error } = await sb.from("profiles").update({ username }).eq("id", session.user.id);
-  if (error) return alert(error.message);
-  closeModal("profileModal");
-  await refreshSession();
+  try {
+    const update = { username, bio };
+    if (selectedProfileImage) update.avatar_url = await uploadProfileImage(selectedProfileImage);
+
+    const { error } = await sb.from("profiles").update(update).eq("id", session.user.id);
+    if (error) throw error;
+
+    closeModal("profileModal");
+    selectedProfileImage = null;
+    await refreshSession();
+  } catch (error) {
+    alert(error.message);
+  }
 });
 
 document.getElementById("guildImage")?.addEventListener("change", event => {
@@ -219,7 +244,7 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
 
 async function loadGuilds() {
   let query = sb.from("guilds")
-    .select("*, profiles(username, role, blocked)")
+    .select("*, profiles(id, username, avatar_url, bio, role, blocked)")
     .order("view_count", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
@@ -290,7 +315,6 @@ async function toggleGuildLike(guild) {
     }
   }
 
-  await sb.from("guilds").update({ like_count: guild.like_count }).eq("id", guild.id);
   renderGuilds();
 }
 
@@ -319,9 +343,19 @@ function renderGuilds() {
     const title = document.createElement("h3");
     title.textContent = guild.name;
 
-    const author = document.createElement("p");
-    author.className = "author-label";
-    author.textContent = "Publicado por " + (guild.profiles?.username || "Usuário");
+    const author = document.createElement("button");
+    author.type = "button";
+    author.className = "author-profile";
+
+    const authorAvatar = document.createElement("img");
+    authorAvatar.src = guild.profiles?.avatar_url || "profile-default.png";
+    authorAvatar.alt = "Foto de perfil";
+
+    const authorName = document.createElement("span");
+    authorName.textContent = "Publicado por " + (guild.profiles?.username || "Usuário");
+
+    author.append(authorAvatar, authorName);
+    author.onclick = () => openMiniProfile(guild.profiles);
 
     const description = document.createElement("p");
     description.textContent = guild.description;
@@ -336,7 +370,9 @@ function renderGuilds() {
 
     const stats = document.createElement("p");
     stats.className = "guild-stats";
-    stats.innerHTML = `👁 ${guild.view_count || 0} &nbsp;&nbsp; `;
+    const viewCount = guild.view_count || 0;
+    const fire = viewCount >= 1000 ? "🔥" : viewCount >= 100 ? "🔥" : viewCount >= 10 ? "♨" : "";
+    stats.innerHTML = `👁 ${viewCount} ${fire} &nbsp;&nbsp; `;
 
     const likeButton = document.createElement("button");
     likeButton.type = "button";
@@ -388,70 +424,112 @@ async function openAccounts() {
     .order("created_at", { ascending: false });
 
   const box = document.getElementById("accountsList");
-  if (error) return box.textContent = error.message;
+  if (error) {
+    box.innerHTML = "Erro ao carregar contas.";
+    console.error(error);
+    return;
+  }
+
   box.innerHTML = "";
-
-  (data || []).forEach(account => {
+  (data || []).forEach(profile => {
     const row = document.createElement("div");
-    row.style.cssText = "border-bottom:1px solid #333;padding:12px 0";
+    row.className = "account-row";
 
-    const name = document.createElement("strong");
-    name.textContent = account.username || "Sem nome";
-    const status = document.createElement("div");
-    status.textContent = account.role === "supreme" ? "Administrador Supremo" :
-      account.role === "admin" ? "Administrador" :
-      account.blocked ? "Usuário · Bloqueado" : "Usuário · Ativo";
+    const username = document.createElement("span");
+    username.className = "account-username";
+    username.textContent = profile.username;
 
-    row.append(name, status);
+    const email = document.createElement("span");
+    email.className = "account-email";
+    email.textContent = profile.email || "-";
 
-    if (isSupreme() && account.role !== "supreme") {
-      const promote = document.createElement("button");
-      promote.className = "cancel-btn";
-      promote.style.cssText = "margin-top:10px;padding:8px;border-radius:7px";
-      promote.textContent = account.role === "admin" ? "Remover administração" : "Tornar administrador";
-      promote.onclick = async () => {
-        const role = account.role === "admin" ? "user" : "admin";
-        const { error } = await sb.from("profiles").update({ role }).eq("id", account.id);
-        if (error) alert(error.message);
-        else openAccounts();
-      };
+    const role = document.createElement("span");
+    role.className = "account-role";
+    role.textContent = profile.role;
 
-      const block = document.createElement("button");
-      block.className = "cancel-btn";
-      block.style.cssText = "margin:10px 0 0 8px;padding:8px;border-radius:7px";
-      block.textContent = account.blocked ? "Desbloquear" : "Bloquear";
-      block.onclick = async () => {
-        const { error } = await sb.from("profiles").update({ blocked: !account.blocked }).eq("id", account.id);
-        if (error) alert(error.message);
-        else openAccounts();
-      };
+    const status = document.createElement("span");
+    status.className = "account-status";
+    status.textContent = profile.blocked ? "Bloqueado" : "Ativo";
+    status.style.color = profile.blocked ? "red" : "green";
 
-      row.append(promote, block);
-    }
+    const actions = document.createElement("div");
+    actions.className = "account-actions";
 
+    const toggleBlock = document.createElement("button");
+    toggleBlock.className = "toggle-block";
+    toggleBlock.textContent = profile.blocked ? "Desbloquear" : "Bloquear";
+    toggleBlock.onclick = async () => {
+      if (profile.blocked) {
+        const { error } = await sb.from("profiles").update({ blocked: false }).eq("id", profile.id);
+        if (error) return alert(error.message);
+        profile.blocked = false;
+      } else {
+        if (!confirm("Tem certeza que deseja bloquear este usuário?")) return;
+        const { error } = await sb.from("profiles").update({ blocked: true }).eq("id", profile.id);
+        if (error) return alert(error.message);
+        profile.blocked = true;
+      }
+      toggleBlock.textContent = profile.blocked ? "Desbloquear" : "Bloquear";
+      status.textContent = profile.blocked ? "Bloqueado" : "Ativo";
+      status.style.color = profile.blocked ? "red" : "green";
+    };
+
+    actions.append(toggleBlock);
+    row.append(username, email, role, status, actions);
     box.appendChild(row);
   });
-
   document.getElementById("accountsModal").style.display = "flex";
 }
 
-const accountStyle = document.createElement("style");
-accountStyle.textContent = `
-.account-actions{display:flex;justify-content:center;gap:8px;margin-top:16px;flex-wrap:wrap}
-.account-actions button{border:1px solid #555;background:#252525;color:white;border-radius:7px;padding:8px 10px;cursor:pointer}
-.account-actions .delete-action{border-color:#d51b35;color:#ff6b7d}
-.author-label{color:#777;font-size:12px;margin:-5px 0 10px}
-.mine-button{background:transparent;border:1px solid #d51b35;color:white;border-radius:9px;padding:10px 14px;cursor:pointer;margin-right:8px}
-`;
-document.head.appendChild(accountStyle);
+document.getElementById("closeAccounts").onclick = () => closeModal("accountsModal");
 
-const guildMetricsStyle = document.createElement("style");
-guildMetricsStyle.textContent = `
-.guild-stats{margin-top:12px!important;color:#aaa!important}
-.guild-like{border:none;background:transparent;color:#e21d3b;font-size:17px;font-weight:bold;cursor:pointer;padding:4px}
-#showMore{background:#d51b35;color:white;border:none;padding:13px 22px;border-radius:8px;font-weight:bold;cursor:pointer}
-`;
-document.head.appendChild(guildMetricsStyle);
+document.getElementById("closeLogin").onclick = () => closeModal("loginModal");
 
-sb.auth.onAuthStateChange(() => refreshSession());
-refreshSession();
+document.getElementById("closeProfile").onclick = () => closeModal("profileModal");
+
+document.getElementById("closeCreate").onclick = () => closeModal("createModal");
+
+document.getElementById("closeGuilds").onclick = () => closeModal("guildsModal");
+
+document.getElementById("closeMiniProfile").onclick = () => closeModal("miniProfileModal");
+
+document.getElementById("openLogin").onclick = openLogin;
+
+document.getElementById("openProfile").onclick = openProfile;
+
+document.getElementById("openCreate").onclick = openCreate;
+
+document.getElementById("toggleMine").onclick = toggleMine;
+
+document.getElementById("logoutButton").onclick = logout;
+
+sb.auth.onAuthStateChange(async (event, session) => {
+  await refreshSession();
+});
+
+loadGuilds();
+
+function openMiniProfile(publicProfile) {
+  const box = document.getElementById("miniProfileContent");
+  const avatar = publicProfile?.avatar_url || "profile-default.png";
+  const name = publicProfile?.username || "Usuário";
+  const bio = publicProfile?.bio || "Nenhuma descrição definida.";
+
+  box.innerHTML = `
+    <img src="${escapeHtml(avatar)}" alt="Foto de perfil" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:3px solid #d51b35;margin-bottom:14px">
+    <h3 style="color:#ed2543;margin-bottom:10px">${escapeHtml(name)}</h3>
+    <p style="color:#bbb;line-height:1.5;white-space:pre-wrap">${escapeHtml(bio)}</p>
+  `;
+
+  document.getElementById("miniProfileModal").style.display = "flex";
+}
+
+const profileInteractionStyle = document.createElement("style");
+profileInteractionStyle.textContent = `
+.author-profile{display:inline-flex;align-items:center;gap:8px;margin:0 auto 10px;border:none;background:transparent;color:#aaa;cursor:pointer;font:inherit}
+.author-profile img{width:42px;height:42px;border-radius:50%;object-fit:cover;border:2px solid #d51b35}
+.guild-like{transition:.18s transform,.18s color}
+.guild-like:hover{transform:scale(1.18)}
+.guild-like:active{transform:scale(.82)}
+`;
+document.head.appendChild(profileInteractionStyle);

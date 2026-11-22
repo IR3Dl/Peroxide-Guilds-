@@ -618,16 +618,55 @@ footer {
   </div>
 </div>
 
-<!-- LOGIN -->
+<!-- LOGIN / CRIAR CONTA -->
 <div class="modal" id="loginModal">
   <div class="modal-box">
     <div class="modal-heading">
-      <h2>Entrar na conta</h2>
+      <h2 id="authModalTitle">Entrar na conta</h2>
       <button class="close-btn" onclick="closeModal('loginModal')">×</button>
     </div>
-    <button type="button" class="save-btn" style="width:100%;padding:13px;border-radius:7px" onclick="loginWithGoogle()">
-      Continuar com Google
-    </button>
+
+    <label>Nome de usuário</label>
+    <input id="authName" type="text" minlength="3" maxlength="30" placeholder="Seu nome público" required>
+
+    <label>Senha</label>
+    <input id="authPassword" type="password" minlength="6" placeholder="Sua senha" required>
+
+    <div id="confirmPasswordGroup" style="display:none">
+      <label>Confirmar senha</label>
+      <input id="authPasswordConfirm" type="password" minlength="6" placeholder="Repita sua senha">
+    </div>
+
+    <div class="modal-actions">
+      <button id="toggleCreateAccount" type="button" class="cancel-btn" onclick="toggleAuthMode()">Criar conta</button>
+      <button id="authSubmit" type="button" class="save-btn" onclick="submitAuth()">Entrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- PEDIDO PARA SER REPRESENTANTE -->
+<div class="modal" id="representativeRequestModal">
+  <div class="modal-box">
+    <div class="modal-heading">
+      <h2>Pedido de representante</h2>
+      <button class="close-btn" onclick="closeModal('representativeRequestModal')">×</button>
+    </div>
+
+    <form id="representativeRequestForm">
+      <label>Nome da guilda</label>
+      <input id="requestGuildName" type="text" maxlength="50" required>
+
+      <label>Convite do Discord</label>
+      <input id="requestGuildDiscord" type="url" placeholder="https://discord.gg/..." required>
+
+      <label>Informações adicionais</label>
+      <textarea id="requestGuildInfo" maxlength="1500" required></textarea>
+
+      <div class="modal-actions">
+        <button type="button" class="cancel-btn" onclick="closeModal('representativeRequestModal')">Cancelar</button>
+        <button type="submit" class="save-btn">Enviar pedido</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -639,6 +678,17 @@ footer {
       <button class="close-btn" onclick="closeModal('accountsModal')">×</button>
     </div>
     <div id="accountsList"></div>
+  </div>
+</div>
+
+<!-- DESCRIÇÃO COMPLETA -->
+<div class="modal" id="descriptionModal">
+  <div class="modal-box">
+    <div class="modal-heading">
+      <h2 id="descriptionModalTitle">Descrição</h2>
+      <button class="close-btn" onclick="closeModal('descriptionModal')">×</button>
+    </div>
+    <p id="descriptionModalText" style="color:#ccc;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere"></p>
   </div>
 </div>
 

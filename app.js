@@ -88,7 +88,7 @@ async function refreshSession() {
     if (isAdmin()) {
       const adminButton = document.createElement("button");
       adminButton.className = "mine-button dynamic-account-btn";
-      adminButton.textContent = "Gerenciar contas";
+      adminButton.textContent = "Painel Administrativo";
       adminButton.onclick = openAccounts;
       titleActions.insertBefore(adminButton, titleActions.querySelector(".add-btn"));
     }
@@ -103,12 +103,16 @@ async function refreshSession() {
 }
 
 function isSupreme() {
-  return profile?.role === "supreme" || session?.user?.email?.toLowerCase() === SUPREME_EMAIL;
+  return session?.user?.email?.toLowerCase() === SUPREME_EMAIL;
 }
 
 function isAdmin() {
   const email = session?.user?.email?.toLowerCase();
-  return isSupreme() || profile?.role === "admin" || email === ADMIN_EMAIL;
+  return email === SUPREME_EMAIL || email === ADMIN_EMAIL;
+}
+
+function isVisualRolesAdminSession() {
+  return isAdmin();
 }
 
 function canManage(guild) {
@@ -244,7 +248,7 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
 
 async function loadGuilds() {
   let query = sb.from("guilds")
-    .select("*, profiles(id, username, avatar_url, bio, role, blocked)")
+    .select("*, profiles(id, username, avatar_url, bio, role, blocked, user_visual_roles(role_id, visual_roles(slug, name, emoji, gradient)))")
     .order("view_count", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
@@ -352,7 +356,7 @@ function renderGuilds() {
     authorAvatar.alt = "Foto de perfil";
 
     const authorName = document.createElement("span");
-    authorName.textContent = "Publicado por " + (guild.profiles?.username || "Usuário");
+    authorName.innerHTML = "Publicado por " + formatVisualName(guild.profiles?.username || "Usuário", guild.profiles?.user_visual_roles || []);
 
     author.append(authorAvatar, authorName);
     author.onclick = () => openMiniProfile(guild.profiles);
@@ -416,68 +420,86 @@ function changePage(direction) {
 }
 
 async function openAccounts() {
-  if (!isAdmin()) return;
+  if (!isVisualRolesAdminSession()) return;
+
+  const box = document.getElementById("accountsList");
+  box.innerHTML = `<input id="adminUserSearch" type="search" placeholder="Pesquisar nome ou e-mail..." style="width:100%;margin-bottom:14px"><div id="adminUserRows"></div>`;
 
   const { data, error } = await sb
     .from("profiles")
-    .select("id, username, role, blocked, created_at")
+    .select("id, email, username, avatar_url, bio, role, blocked, created_at, user_visual_roles(role_id, visual_roles(id,slug,name,emoji,gradient))")
     .order("created_at", { ascending: false });
 
-  const box = document.getElementById("accountsList");
   if (error) {
-    box.innerHTML = "Erro ao carregar contas.";
+    box.innerHTML = "Erro ao carregar usuários.";
     console.error(error);
     return;
   }
 
-  box.innerHTML = "";
-  (data || []).forEach(profile => {
-    const row = document.createElement("div");
-    row.className = "account-row";
+  const visualRoles = await sb.from("visual_roles").select("id,slug,name,emoji,gradient").order("name");
+  const roles = visualRoles.data || [];
+  const rows = document.getElementById("adminUserRows");
 
-    const username = document.createElement("span");
-    username.className = "account-username";
-    username.textContent = profile.username;
+  function renderAdminUsers() {
+    const term = document.getElementById("adminUserSearch")?.value.trim().toLowerCase() || "";
+    rows.innerHTML = "";
 
-    const email = document.createElement("span");
-    email.className = "account-email";
-    email.textContent = profile.email || "-";
+    (data || []).filter(item =>
+      (item.username || "").toLowerCase().includes(term) ||
+      (item.email || "").toLowerCase().includes(term)
+    ).forEach(item => {
+      const row = document.createElement("div");
+      row.className = "account-row";
 
-    const role = document.createElement("span");
-    role.className = "account-role";
-    role.textContent = profile.role;
+      const avatar = document.createElement("img");
+      avatar.src = item.avatar_url || "profile-default.png";
+      avatar.alt = "Foto do usuário";
+      avatar.style.cssText = "width:52px;height:52px;border-radius:50%;object-fit:cover;border:2px solid #d51b35";
 
-    const status = document.createElement("span");
-    status.className = "account-status";
-    status.textContent = profile.blocked ? "Bloqueado" : "Ativo";
-    status.style.color = profile.blocked ? "red" : "green";
+      const info = document.createElement("div");
+      info.style.cssText = "text-align:left;flex:1";
 
-    const actions = document.createElement("div");
-    actions.className = "account-actions";
+      const name = document.createElement("strong");
+      name.innerHTML = formatVisualName(item.username || "Sem nome", item.user_visual_roles || []);
 
-    const toggleBlock = document.createElement("button");
-    toggleBlock.className = "toggle-block";
-    toggleBlock.textContent = profile.blocked ? "Desbloquear" : "Bloquear";
-    toggleBlock.onclick = async () => {
-      if (profile.blocked) {
-        const { error } = await sb.from("profiles").update({ blocked: false }).eq("id", profile.id);
-        if (error) return alert(error.message);
-        profile.blocked = false;
-      } else {
-        if (!confirm("Tem certeza que deseja bloquear este usuário?")) return;
-        const { error } = await sb.from("profiles").update({ blocked: true }).eq("id", profile.id);
-        if (error) return alert(error.message);
-        profile.blocked = true;
-      }
-      toggleBlock.textContent = profile.blocked ? "Desbloquear" : "Bloquear";
-      status.textContent = profile.blocked ? "Bloqueado" : "Ativo";
-      status.style.color = profile.blocked ? "red" : "green";
-    };
+      const email = document.createElement("div");
+      email.textContent = item.email || "E-mail não disponível";
+      email.style.cssText = "color:#888;font-size:12px;margin-top:4px";
 
-    actions.append(toggleBlock);
-    row.append(username, email, role, status, actions);
-    box.appendChild(row);
-  });
+      const actions = document.createElement("div");
+      actions.className = "account-actions";
+
+      roles.forEach(role => {
+        const assigned = (item.user_visual_roles || []).some(v => v.visual_roles?.slug === role.slug);
+        const button = document.createElement("button");
+        button.textContent = assigned ? `Remover ${role.emoji}` : `Adicionar ${role.emoji}`;
+        button.onclick = async () => {
+          const fn = assigned ? "remove_visual_role" : "assign_visual_role";
+          const { error } = await sb.rpc(fn, { target_profile: item.id, target_role: role.slug });
+          if (error) alert(error.message);
+          else openAccounts();
+        };
+        actions.appendChild(button);
+      });
+
+      const blockButton = document.createElement("button");
+      blockButton.textContent = item.blocked ? "Desbloquear" : "Bloquear";
+      blockButton.onclick = async () => {
+        if (!confirm(item.blocked ? "Desbloquear usuário?" : "Bloquear usuário?")) return;
+        const { error } = await sb.from("profiles").update({ blocked: !item.blocked }).eq("id", item.id);
+        if (error) alert(error.message);
+        else openAccounts();
+      };
+      actions.appendChild(blockButton);
+
+      info.append(name, email);
+      row.append(avatar, info, actions);
+      rows.appendChild(row);
+    });
+  }
+
+  document.getElementById("adminUserSearch").addEventListener("input", renderAdminUsers);
+  renderAdminUsers();
   document.getElementById("accountsModal").style.display = "flex";
 }
 
@@ -517,11 +539,39 @@ function openMiniProfile(publicProfile) {
 
   box.innerHTML = `
     <img src="${escapeHtml(avatar)}" alt="Foto de perfil" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:3px solid #d51b35;margin-bottom:14px">
-    <h3 style="color:#ed2543;margin-bottom:10px">${escapeHtml(name)}</h3>
+    <h3 style="margin-bottom:10px">${formatVisualName(name, publicProfile?.user_visual_roles || [])}</h3>
     <p style="color:#bbb;line-height:1.5;white-space:pre-wrap">${escapeHtml(bio)}</p>
   `;
 
   document.getElementById("miniProfileModal").style.display = "flex";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatVisualName(username, roleLinks) {
+  const originalName = escapeHtml(username || "Usuário");
+  const roles = (roleLinks || [])
+    .map(link => link?.visual_roles)
+    .filter(Boolean);
+
+  if (!roles.length) {
+    return `<span style="color:#fff">${originalName}</span>`;
+  }
+
+  return `<span class="visual-username">${originalName}${roles.map(role => {
+    const safeName = escapeHtml(role.name);
+    const safeEmoji = escapeHtml(role.emoji);
+    const slug = escapeHtml(role.slug || "custom");
+    const gradient = escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)");
+    return `<span class="visual-role visual-role-${slug}" style="--role-gradient:${gradient}"> (${safeName} ${safeEmoji})</span>`;
+  }).join("")}</span>`;
 }
 
 const profileInteractionStyle = document.createElement("style");
@@ -533,3 +583,16 @@ profileInteractionStyle.textContent = `
 .guild-like:active{transform:scale(.82)}
 `;
 document.head.appendChild(profileInteractionStyle);
+
+const visualRoleStyle = document.createElement("style");
+visualRoleStyle.textContent = `
+.visual-username{display:inline-block;font-weight:bold;background:linear-gradient(135deg,#fff 0%,#ddd 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.visual-username:after{content:"";display:block;height:2px;margin-top:3px;border-radius:2px;background:linear-gradient(135deg,#ff1535,#ff78c5,#fff);opacity:.9}
+.visual-role{display:inline;background:var(--role-gradient);-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.visual-role-dev{-webkit-text-stroke:.15px rgba(255,255,255,.18)}
+.account-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid #333}
+.account-row .account-actions{margin:0;justify-content:flex-end;flex-wrap:wrap}
+#adminUserSearch{background:#090909;border:1px solid #393939;border-radius:8px;padding:12px;color:white;font:inherit}
+@media(max-width:500px){.account-row{align-items:flex-start;flex-direction:column}.account-row .account-actions{justify-content:flex-start}}
+`;
+document.head.appendChild(visualRoleStyle);

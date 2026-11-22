@@ -16,6 +16,7 @@ let mineOnly = false;
 let displayedCount = 10;
 let likedGuildIds = new Set();
 let selectedProfileImage = null;
+let profilePromptShown = false;
 
 const guildList = document.getElementById("guildList");
 
@@ -28,7 +29,7 @@ function openLogin() {
   document.getElementById("loginModal").style.display = "flex";
 }
 
-function openProfile() {
+function openProfileEdit() {
   document.getElementById("profileModal").style.display = "flex";
   if (!profile) return;
   document.getElementById("publicUsername").value = profile.username || "";
@@ -37,15 +38,29 @@ function openProfile() {
   selectedProfileImage = null;
 }
 
+function openProfile() {
+  if (!session || !profile) return openLogin();
+  openMiniProfile(profile);
+}
+
 async function loginWithGoogle() {
-  const { error } = await sb.auth.signInWithOAuth({
+  closeModal("loginModal");
+  const redirectTo = location.origin + location.pathname;
+
+  const { data, error } = await sb.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: location.origin + location.pathname,
-      queryParams: { prompt: "select_account" }
+      redirectTo,
+      queryParams: { prompt: "select_account" },
+      skipBrowserRedirect: false
     }
   });
-  if (error) alert(error.message);
+
+  if (error) {
+    alert("Erro ao entrar com Google: " + error.message);
+  } else if (!data?.url) {
+    alert("O Google não retornou uma URL de autenticação. Verifique as Redirect URLs no Supabase.");
+  }
 }
 
 async function logout() {
@@ -73,20 +88,15 @@ async function refreshSession() {
     if (error) alert(error.message);
     profile = account;
 
-    loginButton.textContent = "♙ Sair";
-    loginButton.onclick = logout;
+    loginButton.innerHTML = `<img src="${escapeHtml(profile.avatar_url || 'profile-default.png')}" alt="Meu perfil"><span>Meu perfil</span>`;
+    loginButton.className = "login-btn account-avatar-btn";
+    loginButton.onclick = openProfile;
 
     const mineButton = document.createElement("button");
     mineButton.className = "mine-button dynamic-account-btn";
     mineButton.textContent = mineOnly ? "Todas as guildas" : "Minhas publicações";
     mineButton.onclick = toggleMine;
     titleActions.insertBefore(mineButton, titleActions.querySelector(".add-btn"));
-
-    const profileButton = document.createElement("button");
-    profileButton.className = "mine-button dynamic-account-btn";
-    profileButton.textContent = "Meu perfil";
-    profileButton.onclick = openProfile;
-    titleActions.insertBefore(profileButton, titleActions.querySelector(".add-btn"));
 
     if (isAdmin()) {
       const adminButton = document.createElement("button");
@@ -96,7 +106,7 @@ async function refreshSession() {
       titleActions.insertBefore(adminButton, titleActions.querySelector(".add-btn"));
     }
 
-    if (!profile?.username) openProfile();
+    await loadGuilds();
   } else {
     loginButton.textContent = "♙ Entrar na conta";
     loginButton.onclick = openLogin;
@@ -109,13 +119,17 @@ function isSupreme() {
   return session?.user?.email?.toLowerCase() === SUPREME_EMAIL;
 }
 
-function isAdmin() {
+function authorizedAdminEmails() {
   const email = session?.user?.email?.toLowerCase();
   return email === SUPREME_EMAIL || email === ADMIN_EMAIL;
 }
 
+function isAdmin() {
+  return authorizedAdminEmails();
+}
+
 function isVisualRolesAdminSession() {
-  return isAdmin();
+  return authorizedAdminEmails();
 }
 
 function canManage(guild) {
@@ -124,7 +138,12 @@ function canManage(guild) {
 
 async function openCreate() {
   if (!session) return openLogin();
-  if (!profile?.username) return openProfile();
+
+  if (!profile?.username) {
+    openProfileEdit();
+    return;
+  }
+
   if (profile.blocked) return alert("Sua conta está bloqueada.");
 
   editingId = null;
@@ -161,16 +180,24 @@ document.getElementById("profileForm")?.addEventListener("submit", async event =
 
   try {
     const update = { username, bio };
-    if (selectedProfileImage) update.avatar_url = await uploadProfileImage(selectedProfileImage);
 
-    const { error } = await sb.from("profiles").update(update).eq("id", session.user.id);
+    if (selectedProfileImage) {
+      update.avatar_url = await uploadProfileImage(selectedProfileImage);
+    }
+
+    const { error } = await sb
+      .from("profiles")
+      .update(update)
+      .eq("id", session.user.id);
+
     if (error) throw error;
 
+    profilePromptShown = true;
     closeModal("profileModal");
     selectedProfileImage = null;
     await refreshSession();
   } catch (error) {
-    alert(error.message);
+    alert(error.message || "Não foi possível salvar o perfil.");
   }
 });
 
@@ -193,6 +220,48 @@ document.getElementById("guildImage")?.addEventListener("change", event => {
   reader.readAsDataURL(file);
 });
 
+document.getElementById("profileImage")?.addEventListener("change", event => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  if (!file.type.startsWith("image/")) {
+    alert("Escolha um arquivo de imagem válido.");
+    event.target.value = "";
+    return;
+  }
+
+  if (file.size > 2 * 1024 * 1024) {
+    alert("Escolha uma imagem de até 2 MB.");
+    event.target.value = "";
+    return;
+  }
+
+  selectedProfileImage = file;
+  const reader = new FileReader();
+  reader.onload = () => {
+    document.getElementById("profileImagePreview").src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+async function uploadProfileImage(file) {
+  const extension = (file.name.split(".").pop() || "jpg")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+  const path = `${session.user.id}/avatar.${extension}`;
+
+  const { error } = await sb.storage
+    .from("profile-images")
+    .upload(path, file, {
+      cacheControl: "3600",
+      upsert: true,
+      contentType: file.type
+    });
+
+  if (error) throw error;
+  return sb.storage.from("profile-images").getPublicUrl(path).data.publicUrl;
+}
+
 async function uploadGuildImage(file) {
   const extension = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "").toLowerCase();
   const path = `${session.user.id}/${Date.now()}.${extension}`;
@@ -208,7 +277,7 @@ async function uploadGuildImage(file) {
 document.getElementById("guildForm")?.addEventListener("submit", async function(event) {
   event.preventDefault();
   if (!session) return openLogin();
-  if (!profile?.username) return openProfile();
+  if (!profile?.username) return openProfileEdit();
 
   const discord = document.getElementById("guildDiscord").value.trim();
   if (!/^https:\/\/(discord\.gg\/|discord\.com\/invite\/)[a-zA-Z0-9-]+\/?$/.test(discord)) {
@@ -365,7 +434,9 @@ function renderGuilds() {
     author.onclick = () => openMiniProfile(guild.profiles);
 
     const description = document.createElement("p");
-    description.textContent = guild.description;
+    const descriptionText = guild.description || "";
+    description.textContent = descriptionText;
+    description.className = "guild-description-preview";
 
     const link = document.createElement("a");
     link.className = "discord-btn";
@@ -404,6 +475,15 @@ function renderGuilds() {
       card.append(actions);
     }
 
+    if (descriptionText.length > 180) {
+      const moreButton = document.createElement("button");
+      moreButton.type = "button";
+      moreButton.className = "description-more-btn";
+      moreButton.textContent = "Ver mais";
+      moreButton.onclick = () => openDescription(guild.name, descriptionText);
+      card.append(moreButton);
+    }
+
     guildList.appendChild(card);
   });
 
@@ -429,6 +509,10 @@ async function openAccounts() {
   box.innerHTML = `
     <div class="custom-role-builder">
       <h3 style="color:#ed2543;margin-bottom:12px">Criar cargo personalizado</h3>
+      <div class="role-presets">
+        <button type="button" class="role-preset role-preset-dev" id="presetDev">🛠️ Dev</button>
+        <button type="button" class="role-preset role-preset-content" id="presetContent">🎬 Content Creator</button>
+      </div>
       <input id="customRoleName" type="text" maxlength="30" placeholder="Nome do cargo (ex: Cocô)">
       <input id="customRoleEmoji" type="text" maxlength="8" placeholder="Emoji opcional">
       <div style="display:flex;gap:10px;margin:10px 0">
@@ -440,6 +524,20 @@ async function openAccounts() {
     <input id="adminUserSearch" type="search" placeholder="Pesquisar nome ou e-mail..." style="width:100%;margin:14px 0">
     <div id="adminUserRows"></div>
   `;
+
+  document.getElementById("presetDev").onclick = () => {
+    document.getElementById("customRoleName").value = "Dev";
+    document.getElementById("customRoleEmoji").value = "🛠️";
+    document.getElementById("customRoleColor1").value = "#ff1535";
+    document.getElementById("customRoleColor2").value = "#141414";
+  };
+
+  document.getElementById("presetContent").onclick = () => {
+    document.getElementById("customRoleName").value = "Content Creator";
+    document.getElementById("customRoleEmoji").value = "🎬";
+    document.getElementById("customRoleColor1").value = "#ff1688";
+    document.getElementById("customRoleColor2").value = "#fff";
+  };
 
   document.getElementById("createCustomRoleButton").onclick = async () => {
     const name = document.getElementById("customRoleName").value.trim();
@@ -552,11 +650,65 @@ function openMiniProfile(publicProfile) {
   const name = publicProfile?.username || "Usuário";
   const bio = publicProfile?.bio || "Nenhuma descrição definida.";
 
+  const ownsProfile = session?.user?.id && publicProfile?.id === session.user.id;
+
   box.innerHTML = `
     <img src="${escapeHtml(avatar)}" alt="Foto de perfil" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:3px solid #d51b35;margin-bottom:14px">
     <h3 style="margin-bottom:10px">${formatVisualName(name, publicProfile?.user_visual_roles || [])}</h3>
     <p style="color:#bbb;line-height:1.5;white-space:pre-wrap">${escapeHtml(bio)}</p>
   `;
+
+  if (ownsProfile) {
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "mine-button";
+    editButton.textContent = "Editar perfil";
+    editButton.style.marginTop = "18px";
+    editButton.onclick = () => {
+      closeModal("miniProfileModal");
+      openProfileEdit();
+    };
+    box.appendChild(editButton);
+  }
+
+  if (authorizedAdminEmails() && publicProfile?.id && session?.user?.id !== publicProfile.id) {
+    const roleActions = document.createElement("div");
+    roleActions.className = "mini-role-actions";
+    roleActions.style.marginTop = "16px";
+
+    const roles = [
+      { slug: "dev", label: "🛠️ Dev" },
+      { slug: "content_creator", label: "🎬 Content Creator" }
+    ];
+
+    roles.forEach(role => {
+      const assigned = (publicProfile.user_visual_roles || []).some(link =>
+        link?.visual_roles?.slug === role.slug
+      );
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "mine-button";
+      button.style.cssText = "margin:5px;padding:8px 10px";
+      button.textContent = assigned ? `Remover ${role.label}` : `Dar ${role.label}`;
+
+      button.onclick = async () => {
+        const fn = assigned ? "remove_visual_role" : "assign_visual_role";
+        const { error } = await sb.rpc(fn, {
+          target_profile: publicProfile.id,
+          target_role: role.slug
+        });
+
+        if (error) return alert(error.message);
+        await loadGuilds();
+        closeModal("miniProfileModal");
+      };
+
+      roleActions.appendChild(button);
+    });
+
+    box.appendChild(roleActions);
+  }
 
   document.getElementById("miniProfileModal").style.display = "flex";
 }
@@ -620,3 +772,38 @@ customRoleStyle.textContent = `
 .custom-role-builder input[type="color"]{width:54px;height:54px;border:1px solid #555;border-radius:8px;background:#090909;padding:4px}
 `;
 document.head.appendChild(customRoleStyle);
+
+const actionButtonStyle = document.createElement("style");
+actionButtonStyle.textContent = `
+.section-title{flex-wrap:wrap}
+.mine-button{min-height:42px;padding:10px 14px;border:1px solid #d51b35;border-radius:8px;background:linear-gradient(135deg,#1a1012,#0b0b0b);color:#fff!important;box-shadow:0 4px 14px rgba(197,23,49,.12);font-weight:bold;letter-spacing:.2px}
+.mine-button:hover{background:linear-gradient(135deg,#d51b35,#171717);border-color:#f02745}
+.role-presets{display:flex;gap:8px;margin:8px 0 12px;flex-wrap:wrap}
+.role-preset{border:none;border-radius:8px;padding:10px 12px;color:white;font-weight:bold;cursor:pointer}
+.role-preset-dev{background:linear-gradient(135deg,#ff1535 0 50%,#7a1421 75%,#141414)}
+.role-preset-content{background:linear-gradient(135deg,#ff1688 0%,#ff78c5 55%,#fff);color:#34101f}
+`;
+document.head.appendChild(actionButtonStyle);
+
+const accountAvatarStyle = document.createElement("style");
+accountAvatarStyle.textContent = `
+.account-avatar-btn{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:22px}
+.account-avatar-btn img{width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid #d51b35}
+.account-avatar-btn span{font-size:12px;font-weight:bold}
+.guild-description-preview{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:normal!important}
+.description-more-btn{background:transparent;border:none;color:#e21d3b;font-weight:bold;margin-top:8px;cursor:pointer;padding:2px}
+@media(max-width:500px){.account-avatar-btn span{display:none}.account-avatar-btn{padding:5px}}
+`;
+document.head.appendChild(accountAvatarStyle);
+
+function openDescription(title, text) {
+  document.getElementById("descriptionModalTitle").textContent = title;
+  document.getElementById("descriptionModalText").textContent = text;
+  document.getElementById("descriptionModal").style.display = "flex";
+}
+
+document.getElementById("descriptionModal").addEventListener("click", event => {
+  if (event.target.id === "descriptionModal") {
+    closeModal("descriptionModal");
+  }
+});

@@ -40,7 +40,10 @@ function openProfile() {
 async function loginWithGoogle() {
   const { error } = await sb.auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo: location.origin + location.pathname }
+    options: {
+      redirectTo: location.origin + location.pathname,
+      queryParams: { prompt: "select_account" }
+    }
   });
   if (error) alert(error.message);
 }
@@ -536,28 +539,6 @@ async function openAccounts() {
   renderAdminUsers();
   document.getElementById("accountsModal").style.display = "flex";
 }
-
-document.getElementById("closeAccounts").onclick = () => closeModal("accountsModal");
-
-document.getElementById("closeLogin").onclick = () => closeModal("loginModal");
-
-document.getElementById("closeProfile").onclick = () => closeModal("profileModal");
-
-document.getElementById("closeCreate").onclick = () => closeModal("createModal");
-
-document.getElementById("closeGuilds").onclick = () => closeModal("guildsModal");
-
-document.getElementById("closeMiniProfile").onclick = () => closeModal("miniProfileModal");
-
-document.getElementById("openLogin").onclick = openLogin;
-
-document.getElementById("openProfile").onclick = openProfile;
-
-document.getElementById("openCreate").onclick = openCreate;
-
-document.getElementById("toggleMine").onclick = toggleMine;
-
-document.getElementById("logoutButton").onclick = logout;
 
 sb.auth.onAuthStateChange(async (event, session) => {
   await refreshSession();

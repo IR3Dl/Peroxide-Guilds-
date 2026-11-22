@@ -423,7 +423,41 @@ async function openAccounts() {
   if (!isVisualRolesAdminSession()) return;
 
   const box = document.getElementById("accountsList");
-  box.innerHTML = `<input id="adminUserSearch" type="search" placeholder="Pesquisar nome ou e-mail..." style="width:100%;margin-bottom:14px"><div id="adminUserRows"></div>`;
+  box.innerHTML = `
+    <div class="custom-role-builder">
+      <h3 style="color:#ed2543;margin-bottom:12px">Criar cargo personalizado</h3>
+      <input id="customRoleName" type="text" maxlength="30" placeholder="Nome do cargo (ex: Cocô)">
+      <input id="customRoleEmoji" type="text" maxlength="8" placeholder="Emoji opcional">
+      <div style="display:flex;gap:10px;margin:10px 0">
+        <input id="customRoleColor1" type="color" value="#ff1535" aria-label="Primeira cor">
+        <input id="customRoleColor2" type="color" value="#141414" aria-label="Segunda cor">
+      </div>
+      <button id="createCustomRoleButton" type="button" class="save-btn" style="width:100%;padding:11px;border-radius:7px">Criar cargo</button>
+    </div>
+    <input id="adminUserSearch" type="search" placeholder="Pesquisar nome ou e-mail..." style="width:100%;margin:14px 0">
+    <div id="adminUserRows"></div>
+  `;
+
+  document.getElementById("createCustomRoleButton").onclick = async () => {
+    const name = document.getElementById("customRoleName").value.trim();
+    const emoji = document.getElementById("customRoleEmoji").value.trim();
+    const color1 = document.getElementById("customRoleColor1").value;
+    const color2 = document.getElementById("customRoleColor2").value;
+
+    if (name.length < 2) return alert("Digite um nome válido para o cargo.");
+
+    const { error } = await sb.rpc("create_visual_role", {
+      role_name: name,
+      role_emoji: emoji,
+      color_one: color1,
+      color_two: color2
+    });
+
+    if (error) return alert(error.message);
+    document.getElementById("customRoleName").value = "";
+    document.getElementById("customRoleEmoji").value = "";
+    await openAccounts();
+  };
 
   const { data, error } = await sb
     .from("profiles")
@@ -567,10 +601,11 @@ function formatVisualName(username, roleLinks) {
 
   return `<span class="visual-username">${originalName}${roles.map(role => {
     const safeName = escapeHtml(role.name);
-    const safeEmoji = escapeHtml(role.emoji);
+    const safeEmoji = escapeHtml(role.emoji || "").trim();
+    const emojiText = safeEmoji ? ` ${safeEmoji}` : "";
     const slug = escapeHtml(role.slug || "custom");
     const gradient = escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)");
-    return `<span class="visual-role visual-role-${slug}" style="--role-gradient:${gradient}"> (${safeName} ${safeEmoji})</span>`;
+    return `<span class="visual-role visual-role-${slug}" style="--role-gradient:${gradient}"> (${safeName}${emojiText})</span>`;
   }).join("")}</span>`;
 }
 
@@ -596,3 +631,11 @@ visualRoleStyle.textContent = `
 @media(max-width:500px){.account-row{align-items:flex-start;flex-direction:column}.account-row .account-actions{justify-content:flex-start}}
 `;
 document.head.appendChild(visualRoleStyle);
+
+const customRoleStyle = document.createElement("style");
+customRoleStyle.textContent = `
+.custom-role-builder{background:#151515;border:1px solid #3a3a3a;border-radius:10px;padding:14px;margin-bottom:14px}
+.custom-role-builder input[type="text"]{width:100%;margin:5px 0;background:#090909;border:1px solid #393939;border-radius:8px;padding:11px;color:white;font:inherit}
+.custom-role-builder input[type="color"]{width:54px;height:54px;border:1px solid #555;border-radius:8px;background:#090909;padding:4px}
+`;
+document.head.appendChild(customRoleStyle);

@@ -45,7 +45,7 @@ create policy "public read visual roles" on public.visual_roles
 for select using (true);
 
 drop policy if exists "public read user visual roles" on public.user_visual_roles;
-create policy "public read user visual roles" on public.user_visual_roles
+create policy "public read user visual_roles" on public.user_visual_roles
 for select using (true);
 
 drop policy if exists "supreme admins manage visual roles" on public.user_visual_roles;
@@ -137,3 +137,51 @@ begin
   return new;
 end;
 $$;
+
+create or replace function public.create_visual_role(role_name text, role_emoji text, color_one text, color_two text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  role_uuid uuid;
+  safe_name text;
+  safe_slug text;
+  safe_gradient text;
+begin
+  if not public.is_visual_roles_admin() then
+    raise exception 'Acesso negado';
+  end if;
+
+  safe_name := trim(role_name);
+  if char_length(safe_name) < 2 or char_length(safe_name) > 30 then
+    raise exception 'O nome do cargo deve ter entre 2 e 30 caracteres.';
+  end;
+
+  if color_one !~ '^#[0-9A-Fa-f]{6}$' or color_two !~ '^#[0-9A-Fa-f]{6}$' then
+    raise exception 'As cores devem estar no formato hexadecimal.';
+  end if;
+
+  safe_slug := lower(regexp_replace(safe_name, '[^a-zA-Z0-9]+', '-', 'g'));
+  safe_slug := trim(both '-' from safe_slug);
+  if safe_slug = '' then
+    raise exception 'Nome de cargo inválido.';
+  end if;
+
+  safe_gradient := 'linear-gradient(135deg,' || color_one || ' 0%, ' || color_two || ' 100%)';
+
+  insert into public.visual_roles(slug, name, emoji, gradient)
+  values (safe_slug, safe_name, coalesce(nullif(trim(role_emoji), ''), ''), safe_gradient)
+  on conflict (slug) do update set
+    name = excluded.name,
+    emoji = excluded.emoji,
+    gradient = excluded.gradient
+  returning id into role_uuid;
+
+  return role_uuid;
+end;
+$$;
+
+revoke all on function public.create_visual_role(text,text,text,text) from public, anon;
+grant execute on function public.create_visual_role(text,text,text,text) to authenticated;

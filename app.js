@@ -13,6 +13,8 @@ let editingId = null;
 let session = null;
 let profile = null;
 let mineOnly = false;
+let displayedCount = 10;
+let likedGuildIds = new Set();
 
 const guildList = document.getElementById("guildList");
 
@@ -216,22 +218,33 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
 });
 
 async function loadGuilds() {
-  let query = sb.from("guilds").select("*, profiles(username, role, blocked)").order("created_at", { ascending: false });
+  let query = sb.from("guilds")
+    .select("*, profiles(username, role, blocked)")
+    .order("view_count", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: false });
+
   if (mineOnly && session) query = query.eq("user_id", session.user.id);
 
   const { data, error } = await query;
-  if (error) {
-    console.error(error);
-    guilds = [];
-  } else {
-    guilds = data || [];
+  guilds = error ? [] : (data || []);
+
+  likedGuildIds = new Set();
+  if (session && guilds.length) {
+    const { data: likes } = await sb
+      .from("guild_likes")
+      .select("guild_id")
+      .eq("user_id", session.user.id);
+    (likes || []).forEach(like => likedGuildIds.add(like.guild_id));
   }
+
+  if (error) console.error(error);
   renderGuilds();
 }
 
 async function toggleMine() {
   if (!session) return openLogin();
   mineOnly = !mineOnly;
+  displayedCount = 10;
   await loadGuilds();
 }
 
@@ -243,11 +256,52 @@ async function deleteGuild(guild) {
   else await loadGuilds();
 }
 
+async function registerGuildView(guild) {
+  const viewedKey = `viewed:${guild.id}`;
+  if (sessionStorage.getItem(viewedKey)) return;
+  sessionStorage.setItem(viewedKey, "1");
+
+  await sb.rpc("increment_guild_view", { guild_uuid: guild.id });
+  guild.view_count = (guild.view_count || 0) + 1;
+  renderGuilds();
+}
+
+async function toggleGuildLike(guild) {
+  if (!session) return openLogin();
+
+  const alreadyLiked = likedGuildIds.has(guild.id);
+  if (alreadyLiked) {
+    const { error } = await sb.from("guild_likes")
+      .delete()
+      .eq("guild_id", guild.id)
+      .eq("user_id", session.user.id);
+    if (!error) {
+      likedGuildIds.delete(guild.id);
+      guild.like_count = Math.max(0, (guild.like_count || 0) - 1);
+    }
+  } else {
+    const { error } = await sb.from("guild_likes")
+      .insert({ guild_id: guild.id, user_id: session.user.id });
+    if (!error) {
+      likedGuildIds.add(guild.id);
+      guild.like_count = (guild.like_count || 0) + 1;
+    } else {
+      return alert(error.message);
+    }
+  }
+
+  await sb.from("guilds").update({ like_count: guild.like_count }).eq("id", guild.id);
+  renderGuilds();
+}
+
+function showMoreGuilds() {
+  displayedCount += 10;
+  renderGuilds();
+}
+
 function renderGuilds() {
   guildList.innerHTML = "";
-  const totalPages = Math.ceil(guilds.length / 10);
-  const start = (currentPage - 1) * 10;
-  const visibleGuilds = guilds.slice(start, start + 10);
+  const visibleGuilds = guilds.slice(0, displayedCount);
 
   if (guilds.length === 0) {
     guildList.innerHTML = `<div class="empty">Nenhuma guilda publicada ainda.<br><br>Seja o primeiro a apresentar sua comunidade!</div>`;
@@ -278,8 +332,20 @@ function renderGuilds() {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.textContent = "Discord";
+    link.onclick = () => registerGuildView(guild);
 
-    card.append(avatar, title, author, description, link);
+    const stats = document.createElement("p");
+    stats.className = "guild-stats";
+    stats.innerHTML = `👁 ${guild.view_count || 0} &nbsp;&nbsp; `;
+
+    const likeButton = document.createElement("button");
+    likeButton.type = "button";
+    likeButton.className = "guild-like";
+    likeButton.textContent = (likedGuildIds.has(guild.id) ? "♥ " : "♡ ") + (guild.like_count || 0);
+    likeButton.onclick = () => toggleGuildLike(guild);
+
+    stats.appendChild(likeButton);
+    card.append(avatar, title, author, description, link, stats);
 
     if (canManage(guild)) {
       const actions = document.createElement("div");
@@ -299,11 +365,8 @@ function renderGuilds() {
   });
 
   const pagination = document.getElementById("pagination");
-  if (guilds.length > 10) {
+  if (guilds.length > displayedCount) {
     pagination.style.display = "flex";
-    document.getElementById("pageNumber").textContent = `${currentPage} / ${totalPages}`;
-    document.getElementById("previous").disabled = currentPage === 1;
-    document.getElementById("next").disabled = currentPage === totalPages;
   } else {
     pagination.style.display = "none";
   }
@@ -381,6 +444,14 @@ accountStyle.textContent = `
 .mine-button{background:transparent;border:1px solid #d51b35;color:white;border-radius:9px;padding:10px 14px;cursor:pointer;margin-right:8px}
 `;
 document.head.appendChild(accountStyle);
+
+const guildMetricsStyle = document.createElement("style");
+guildMetricsStyle.textContent = `
+.guild-stats{margin-top:12px!important;color:#aaa!important}
+.guild-like{border:none;background:transparent;color:#e21d3b;font-size:17px;font-weight:bold;cursor:pointer;padding:4px}
+#showMore{background:#d51b35;color:white;border:none;padding:13px 22px;border-radius:8px;font-weight:bold;cursor:pointer}
+`;
+document.head.appendChild(guildMetricsStyle);
 
 sb.auth.onAuthStateChange(() => refreshSession());
 refreshSession();

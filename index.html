@@ -521,9 +521,7 @@ footer {
   <div class="guild-grid" id="guildList"></div>
 
   <div class="pagination" id="pagination">
-    <button id="previous" onclick="changePage(-1)">‹</button>
-    <span id="pageNumber">1</span>
-    <button id="next" onclick="changePage(1)">›</button>
+    <button id="showMore" type="button" onclick="showMoreGuilds()">Mostrar mais</button>
   </div>
 
 </main>
@@ -812,6 +810,12 @@ function changePage(direction) {
   currentPage += direction;
   currentPage = Math.max(1, Math.min(currentPage, totalPages));
 
+  renderGuilds();
+  window.scrollTo({top: 400, behavior: "smooth"});
+}
+
+function showMoreGuilds() {
+  currentPage++;
   renderGuilds();
   window.scrollTo({top: 400, behavior: "smooth"});
 }

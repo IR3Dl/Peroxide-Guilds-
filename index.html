@@ -469,6 +469,10 @@ footer {
     grid-template-columns: 1fr;
   }
 }
+
+#accountsModal .modal-box{max-width:760px;max-height:90vh;overflow-y:auto}
+#accountsModal .modal-box[hidden],#accountsModal section[hidden]{display:none!important}
+
 </style>
 </head>
 
@@ -550,7 +554,7 @@ footer {
       src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' fill='%23222222'/%3E%3Ctext x='60' y='65' fill='white' text-anchor='middle' font-size='12'%3EFOTO%3C/text%3E%3C/svg%3E">
 
       <input type="file" id="guildImage"
-      accept="image/*" required>
+      accept="image/*">
 
       <label>Nome da guilda</label>
       <input id="guildName" type="text"
@@ -565,6 +569,12 @@ footer {
       <input id="guildDiscord" type="url"
       placeholder="https://discord.gg/..." required>
 
+      <label>Perfis de criadores de conteúdo (opcional)</label>
+      <input id="guildContent1" type="url" placeholder="YouTube, Twitch ou TikTok — perfil 1">
+      <input id="guildContent2" type="url" placeholder="YouTube, Twitch ou TikTok — perfil 2" style="margin-top:8px">
+      <input id="guildContent3" type="url" placeholder="YouTube, Twitch ou TikTok — perfil 3" style="margin-top:8px">
+      <p class="small-note">Aceitamos somente links de perfil/canal. Links de vídeos, lives e publicações serão recusados.</p>
+
       <div class="modal-actions">
         <button type="button" class="cancel-btn"
         onclick="closeModal('createModal')">Cancelar</button>
@@ -573,10 +583,6 @@ footer {
           Criar guilda
         </button>
       </div>
-
-      <p class="small-note">
-        Sua publicação ficará salva neste navegador nesta versão de demonstração.
-      </p>
 
     </form>
   </div>
@@ -644,37 +650,11 @@ footer {
   </div>
 </div>
 
-<!-- PEDIDO PARA SER REPRESENTANTE -->
-<div class="modal" id="representativeRequestModal">
-  <div class="modal-box">
-    <div class="modal-heading">
-      <h2>Pedido de representante</h2>
-      <button class="close-btn" onclick="closeModal('representativeRequestModal')">×</button>
-    </div>
-
-    <form id="representativeRequestForm">
-      <label>Nome da guilda</label>
-      <input id="requestGuildName" type="text" maxlength="50" required>
-
-      <label>Convite do Discord</label>
-      <input id="requestGuildDiscord" type="url" placeholder="https://discord.gg/..." required>
-
-      <label>Informações adicionais</label>
-      <textarea id="requestGuildInfo" maxlength="1500" required></textarea>
-
-      <div class="modal-actions">
-        <button type="button" class="cancel-btn" onclick="closeModal('representativeRequestModal')">Cancelar</button>
-        <button type="submit" class="save-btn">Enviar pedido</button>
-      </div>
-    </form>
-  </div>
-</div>
-
 <!-- GERENCIAR CONTAS -->
 <div class="modal" id="accountsModal">
   <div class="modal-box">
     <div class="modal-heading">
-      <h2>Gerenciar contas</h2>
+      <h2>Painel administrativo</h2>
       <button class="close-btn" onclick="closeModal('accountsModal')">×</button>
     </div>
     <div id="accountsList"></div>

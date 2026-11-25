@@ -414,6 +414,10 @@ footer {
   line-height: 1.5;
 }
 
+.profile-banner-preview{display:block;width:100%;max-height:170px;aspect-ratio:16/5;object-fit:cover;border:1px solid #4a3439;border-radius:9px;margin:12px 0;background:#1a1114}
+.profile-banner-preview[hidden]{display:none}
+.profile-private-toggle{display:flex!important;align-items:center;gap:9px;margin:14px 0 4px}.profile-private-toggle input{width:auto!important;accent-color:#d51b35}
+
 @media(max-width: 500px) {
   header {
     padding: 13px 3%;
@@ -600,11 +604,26 @@ footer {
       <img id="profileImagePreview" class="preview" src="profile-default.png">
       <input type="file" id="profileImage" accept="image/*">
 
+      <label>Banner do perfil (imagem ou GIF)</label>
+      <img id="profileBannerPreview" class="profile-banner-preview" alt="Prévia do banner" hidden>
+      <input type="file" id="profileBanner" accept="image/*,.gif">
+      <p class="small-note">GIFs são aceitos. Tamanho máximo: 5 MB.</p>
+
       <label>Nome de usuário</label>
       <input id="publicUsername" type="text" maxlength="30" minlength="3" placeholder="Ex: Rukia2004" required>
 
       <label>Descrição do perfil</label>
       <textarea id="publicBio" maxlength="180" placeholder="Conte um pouco sobre você..."></textarea>
+
+      <label>Uma rede social (opcional)</label>
+      <input id="publicSocial" type="url" placeholder="https://instagram.com/seuusuario">
+      <p class="small-note">Instagram, X, YouTube, Twitch, TikTok, Discord ou GitHub. O ícone será identificado automaticamente.</p>
+
+      <label class="profile-private-toggle"><input id="publicProfilePrivate" type="checkbox"> Fechar meu perfil (privado)</label>
+      <p class="small-note">Quando ativado, outros usuários verão apenas o aviso de perfil privado.</p>
+
+      <label>Pré-visualização do cartão</label>
+      <div id="profileLivePreview"></div>
 
       <div class="modal-actions">
         <button type="submit" class="save-btn">Salvar perfil</button>
@@ -673,6 +692,8 @@ footer {
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gif.js.optimized/dist/gif.js"></script>
 <script src="app.js"></script>
 <!-- LEGADO LOCAL - SUBSTITUIDO POR SUPABASE
 <script>

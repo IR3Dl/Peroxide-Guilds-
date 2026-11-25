@@ -29,6 +29,9 @@ let likedGuildIds = new Set();
 let commentCounts = new Map();
 let selectedGuildBanner = null;
 let sessionRefreshVersion = 0;
+let guildSearchTerm = "";
+let guildSortMode = "recent";
+let publicationToolsReady = false;
 
 async function loadGuilds() {
   let query = sb
@@ -134,12 +137,42 @@ function openDescription(title, text) {
   document.getElementById("descriptionModal").style.display = "flex";
 }
 
-function renderGuilds() {
-  guildList.innerHTML = "";
-  const visibleGuilds = guilds.slice(0, displayedCount);
+function ensurePublicationTools() {
+  if (publicationToolsReady) return;
+  const section = document.querySelector(".section-title");
+  if (!section) return;
+  const tools = document.createElement("div");
+  tools.className = "publication-tools";
+  tools.innerHTML = `<input class="publication-search" type="search" aria-label="Pesquisar guildas" placeholder="Pesquisar guildas..." maxlength="80"><select class="publication-sort" aria-label="Ordenar publicações"><option value="recent">Mais recentes</option><option value="likes">Mais curtidas</option><option value="views">Mais visualizações</option></select>`;
+  const search = tools.querySelector("input");
+  const sort = tools.querySelector("select");
+  search.value = guildSearchTerm;
+  sort.value = guildSortMode;
+  search.addEventListener("input", () => { guildSearchTerm = search.value.trim().toLocaleLowerCase(); displayedCount = 10; renderGuilds(); });
+  sort.addEventListener("change", () => { guildSortMode = sort.value; displayedCount = 10; renderGuilds(); });
+  section.insertAdjacentElement("afterend", tools);
+  publicationToolsReady = true;
+}
 
-  if (!guilds.length) {
-    guildList.innerHTML = `<div class="empty">Nenhuma guilda publicada ainda.<br><br>Seja o primeiro a apresentar sua comunidade!</div>`;
+function renderGuilds() {
+  ensurePublicationTools();
+  guildList.innerHTML = "";
+  const filteredGuilds = guilds.filter(guild => {
+    const haystack = `${guild.name || ""} ${guild.description || ""}`.toLocaleLowerCase();
+    return !guildSearchTerm || haystack.includes(guildSearchTerm);
+  });
+  const sortedGuilds = [...filteredGuilds].sort((a, b) => {
+    if (guildSortMode === "likes") return (b.like_count || 0) - (a.like_count || 0) || new Date(b.created_at) - new Date(a.created_at);
+    if (guildSortMode === "views") return (b.view_count || 0) - (a.view_count || 0) || new Date(b.created_at) - new Date(a.created_at);
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+  });
+  const visibleGuilds = sortedGuilds.slice(0, displayedCount);
+
+  if (!visibleGuilds.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = guildSearchTerm ? "Nenhuma guilda encontrada para essa pesquisa." : (mineOnly ? "Você ainda não publicou nenhuma guilda." : "Nenhuma guilda publicada ainda. Seja o primeiro a apresentar sua comunidade!");
+    guildList.appendChild(empty);
   }
 
   visibleGuilds.forEach(guild => {
@@ -228,6 +261,14 @@ function renderGuilds() {
     commentToggle.className = "comments-toggle";
     commentToggle.textContent = `◯ ${commentCounts.get(guild.id) || 0} comentários`;
     stats.append(views, likeButton, commentToggle);
+    if (session && guild.user_id !== session.user.id && !isAdmin()) {
+      const reportGuild = document.createElement("button");
+      reportGuild.type = "button";
+      reportGuild.className = "comments-toggle";
+      reportGuild.textContent = "Denunciar";
+      reportGuild.onclick = () => reportGuildContent(guild, null, "guild");
+      stats.appendChild(reportGuild);
+    }
 
     const content = document.createElement("div");
     content.className = "publication-content";
@@ -276,7 +317,7 @@ function renderGuilds() {
   });
 
   const pagination = document.getElementById("pagination");
-  if (guilds.length > displayedCount) {
+  if (filteredGuilds.length > displayedCount) {
     pagination.style.display = "flex";
   } else {
     pagination.style.display = "none";
@@ -326,7 +367,7 @@ async function loadGuildComments(guild, panel) {
   panel.dataset.loaded = "1";
   panel.innerHTML = '<p class="comments-loading">Carregando comentários...</p>';
   const { data, error } = await sb.from("guild_comments")
-    .select("id,guild_id,user_id,parent_id,content,created_at,profiles(id,username,avatar_url,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated)))")
+    .select("id,guild_id,user_id,parent_id,content,created_at,profiles(id,username,avatar_url,bio,banner_url,social_url,is_private,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated)))")
     .eq("guild_id", guild.id).order("created_at", { ascending: true });
   if (error) {
     panel.dataset.loaded = "";
@@ -334,6 +375,50 @@ async function loadGuildComments(guild, panel) {
     return;
   }
   renderGuildComments(guild, panel, data || []);
+}
+
+function canModerateGuildComments(guild) {
+  return !!session && (isAdmin() || guild?.user_id === session.user.id);
+}
+
+function makeCommentAuthorButton(publicProfile) {
+  const user = document.createElement("button");
+  user.type = "button";
+  user.className = "comment-author";
+  const avatar = document.createElement("img");
+  avatar.src = publicProfile?.avatar_url || "profile-default.png";
+  avatar.alt = "";
+  const name = document.createElement("span");
+  name.innerHTML = formatVisualName(publicProfile?.username || "Usuário", publicProfile?.user_visual_roles || []);
+  user.append(avatar, name);
+  user.onclick = () => publicProfile && openMiniProfile(publicProfile);
+  return user;
+}
+
+function addCommentActions(row, guild, panel, comment) {
+  const own = !!session && comment.user_id === session.user.id;
+  const moderator = canModerateGuildComments(guild);
+  const actions = document.createElement("div");
+  actions.className = "comment-actions";
+  if (session && own) {
+    const edit = document.createElement("button");
+    edit.type = "button"; edit.textContent = "Editar";
+    edit.onclick = () => editGuildComment(guild, panel, comment);
+    actions.appendChild(edit);
+  }
+  if (session && (own || moderator)) {
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.textContent = "Excluir"; remove.className = "comment-delete";
+    remove.onclick = () => deleteGuildComment(guild, panel, comment);
+    actions.appendChild(remove);
+  }
+  if (session && !own) {
+    const report = document.createElement("button");
+    report.type = "button"; report.textContent = "Denunciar";
+    report.onclick = () => reportGuildContent(guild, comment.id, "comment");
+    actions.appendChild(report);
+  }
+  if (actions.childElementCount) row.appendChild(actions);
 }
 
 function renderGuildComments(guild, panel, comments) {
@@ -346,35 +431,25 @@ function renderGuildComments(guild, panel, comments) {
   roots.forEach(item => {
     const row = document.createElement("div");
     row.className = "guild-comment";
-    const user = document.createElement("button");
-    user.type = "button";
-    user.className = "comment-author";
-    const avatar = document.createElement("img");
-    avatar.src = item.profiles?.avatar_url || "profile-default.png";
-    avatar.alt = "";
-    const name = document.createElement("span");
-    name.innerHTML = formatVisualName(item.profiles?.username || "Usuário", item.profiles?.user_visual_roles || []);
-    user.append(avatar, name);
-    user.onclick = () => item.profiles && openMiniProfile(item.profiles);
+    row.appendChild(makeCommentAuthorButton(item.profiles));
     const body = document.createElement("p");
     body.textContent = item.content;
-    row.append(user, body);
+    row.appendChild(body);
+    addCommentActions(row, guild, panel, item);
     if (session) {
       const reply = document.createElement("button");
-      reply.type = "button";
-      reply.className = "comment-reply-btn";
-      reply.textContent = "Responder";
+      reply.type = "button"; reply.className = "comment-reply-btn"; reply.textContent = "Responder";
       reply.onclick = () => submitGuildComment(guild, panel, item.id);
       row.appendChild(reply);
     }
-    comments.filter(reply => reply.parent_id === item.id).forEach(replyItem => {
+    comments.filter(replyItem => replyItem.parent_id === item.id).forEach(replyItem => {
       const replyRow = document.createElement("div");
       replyRow.className = "guild-comment guild-comment-reply";
-      const replyName = document.createElement("strong");
-      replyName.textContent = replyItem.profiles?.username || "Usuário";
+      replyRow.appendChild(makeCommentAuthorButton(replyItem.profiles));
       const replyBody = document.createElement("p");
       replyBody.textContent = replyItem.content;
-      replyRow.append(replyName, replyBody);
+      replyRow.appendChild(replyBody);
+      addCommentActions(replyRow, guild, panel, replyItem);
       row.appendChild(replyRow);
     });
     panel.appendChild(row);
@@ -386,23 +461,46 @@ function renderGuildComments(guild, panel, comments) {
   input.placeholder = session ? "Escreva um comentário..." : "Entre na sua conta para comentar";
   input.disabled = !session;
   const send = document.createElement("button");
-  send.type = "submit";
-  send.textContent = "Comentar";
-  send.disabled = !session;
+  send.type = "submit"; send.textContent = "Comentar"; send.disabled = !session;
   form.append(input, send);
-  form.onsubmit = async event => {
-    event.preventDefault();
-    await submitGuildComment(guild, panel, null, input.value);
-  };
+  form.onsubmit = async event => { event.preventDefault(); await submitGuildComment(guild, panel, null, input.value); };
   panel.appendChild(form);
   if (!session) {
     const login = document.createElement("button");
-    login.type = "button";
-    login.className = "comment-login-btn";
-    login.textContent = "Entrar";
-    login.onclick = openLogin;
+    login.type = "button"; login.className = "comment-login-btn"; login.textContent = "Entrar"; login.onclick = openLogin;
     panel.appendChild(login);
   }
+}
+
+async function editGuildComment(guild, panel, comment) {
+  if (!session || comment.user_id !== session.user.id) return;
+  const updated = prompt("Editar comentário:", comment.content);
+  if (updated === null) return;
+  const content = updated.trim();
+  if (!content) return alert("O comentário não pode ficar vazio.");
+  const { error } = await sb.from("guild_comments").update({ content }).eq("id", comment.id).eq("user_id", session.user.id);
+  if (error) return alert("Não foi possível editar: " + error.message);
+  await loadGuildComments(guild, panel);
+}
+
+async function deleteGuildComment(guild, panel, comment) {
+  if (!session || !(comment.user_id === session.user.id || canModerateGuildComments(guild))) return;
+  if (!confirm("Excluir este comentário? As respostas dele também serão removidas.")) return;
+  const { error } = await sb.from("guild_comments").delete().eq("id", comment.id);
+  if (error) return alert("Não foi possível excluir: " + error.message);
+  commentCounts.set(guild.id, Math.max(0, (commentCounts.get(guild.id) || 0) - (comment.parent_id ? 0 : 1)));
+  const countButton = panel.parentElement?.querySelector(".comments-toggle");
+  if (countButton) countButton.textContent = `◯ ${commentCounts.get(guild.id)} comentários`;
+  await loadGuildComments(guild, panel);
+}
+
+async function reportGuildContent(guild, commentId, contentType) {
+  if (!session) return openLogin();
+  const reason = prompt(contentType === "guild" ? "Por que deseja denunciar esta publicação?" : "Por que deseja denunciar este comentário?");
+  if (!reason || !reason.trim()) return;
+  const { error } = await sb.from("guild_reports").insert({ guild_id: guild.id, comment_id: commentId, reporter_id: session.user.id, content_type: contentType, reason: reason.trim().slice(0, 500) });
+  if (error) return alert("Não foi possível enviar a denúncia: " + error.message);
+  alert("Denúncia enviada para a administração.");
 }
 
 async function submitGuildComment(guild, panel, parentId = null, suppliedText = null) {
@@ -589,12 +687,24 @@ async function refreshSession() {
     mineButton.onclick = toggleMine;
     titleActions.insertBefore(mineButton, titleActions.querySelector(".add-btn"));
 
+    const notificationsButton = document.createElement("button");
+    notificationsButton.className = "mine-button dynamic-account-btn notification-button";
+    notificationsButton.textContent = "Notificações";
+    notificationsButton.onclick = openNotifications;
+    titleActions.insertBefore(notificationsButton, titleActions.querySelector(".add-btn"));
+
     if (isAdmin()) {
       const adminButton = document.createElement("button");
       adminButton.className = "mine-button dynamic-account-btn";
       adminButton.textContent = "Painel Administrativo";
       adminButton.onclick = openAccounts;
       titleActions.insertBefore(adminButton, titleActions.querySelector(".add-btn"));
+
+      const moderationButton = document.createElement("button");
+      moderationButton.className = "mine-button dynamic-account-btn";
+      moderationButton.textContent = "Moderação";
+      moderationButton.onclick = openModerationPanel;
+      titleActions.insertBefore(moderationButton, titleActions.querySelector(".add-btn"));
 
     }
 
@@ -607,6 +717,68 @@ async function refreshSession() {
   }
 
   await loadGuilds();
+}
+
+async function openNotifications() {
+  if (!session) return openLogin();
+  const { data, error } = await sb.from("guild_notifications")
+    .select("id,notification_type,message,created_at,is_read,guild_id")
+    .eq("recipient_id", session.user.id).order("created_at", { ascending: false }).limit(30);
+  if (error) return alert("Não foi possível carregar notificações: " + error.message);
+  const modal = document.createElement("div");
+  modal.className = "modal"; modal.style.display = "flex"; modal.style.zIndex = "10000";
+  const box = document.createElement("div"); box.className = "modal-box";
+  const title = document.createElement("h2"); title.textContent = "Notificações";
+  box.appendChild(title);
+  if (!data?.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Você ainda não tem notificações."; box.appendChild(empty); }
+  (data || []).forEach(item => { const line = document.createElement("div"); line.className = "notification-row" + (item.is_read ? " is-read" : ""); line.textContent = item.message; const time = document.createElement("small"); time.textContent = new Date(item.created_at).toLocaleString("pt-BR"); line.appendChild(time); box.appendChild(line); });
+  const close = document.createElement("button"); close.className = "mine-button"; close.textContent = "Fechar"; close.onclick = () => modal.remove(); box.appendChild(close); modal.appendChild(box); modal.addEventListener("click", event => { if (event.target === modal) modal.remove(); }); document.body.appendChild(modal);
+  const unread = (data || []).filter(item => !item.is_read).map(item => item.id);
+  if (unread.length) await sb.from("guild_notifications").update({ is_read: true }).in("id", unread).eq("recipient_id", session.user.id);
+}
+
+async function openModerationPanel() {
+  if (!isAdmin()) return;
+  const [{ data: reports, error: reportsError }, { data: terms, error: termsError }] = await Promise.all([
+    sb.from("guild_reports").select("id,guild_id,comment_id,content_type,reason,status,created_at,guilds(name),guild_comments(content)").order("created_at", { ascending: false }).limit(100),
+    sb.from("guild_blocked_terms").select("id,term").order("term")
+  ]);
+  if (reportsError) return alert("Não foi possível carregar denúncias: " + reportsError.message);
+  if (termsError) return alert("Não foi possível carregar os termos bloqueados: " + termsError.message);
+  const modal = document.createElement("div"); modal.className = "modal"; modal.style.display = "flex"; modal.style.zIndex = "10000";
+  const box = document.createElement("div"); box.className = "modal-box moderation-modal";
+  const heading = document.createElement("h2"); heading.textContent = "Central de moderação"; box.appendChild(heading);
+  const termHeading = document.createElement("h3"); termHeading.textContent = "Palavras e expressões bloqueadas"; box.appendChild(termHeading);
+  const termForm = document.createElement("form"); termForm.className = "moderation-term-form";
+  const termInput = document.createElement("input"); termInput.type = "text"; termInput.maxLength = 80; termInput.placeholder = "Adicionar termo bloqueado"; termInput.required = true;
+  const termAdd = document.createElement("button"); termAdd.type = "submit"; termAdd.textContent = "Adicionar"; termForm.append(termInput, termAdd);
+  termForm.onsubmit = async event => { event.preventDefault(); const term = termInput.value.trim().toLocaleLowerCase(); if (term.length < 2) return; const { error } = await sb.from("guild_blocked_terms").insert({ term }); if (error) return alert("Não foi possível adicionar: " + error.message); modal.remove(); await openModerationPanel(); };
+  box.appendChild(termForm);
+  const termList = document.createElement("div"); termList.className = "moderation-terms";
+  (terms || []).forEach(item => { const chip = document.createElement("span"); chip.className = "moderation-term"; chip.textContent = item.term; const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "×"; remove.title = "Remover termo"; remove.onclick = async () => { const { error } = await sb.from("guild_blocked_terms").delete().eq("id", item.id); if (error) return alert(error.message); modal.remove(); await openModerationPanel(); }; chip.appendChild(remove); termList.appendChild(chip); });
+  if (!terms?.length) { const empty = document.createElement("p"); empty.className = "moderation-muted"; empty.textContent = "Nenhum termo cadastrado. Os termos adicionados aqui serão bloqueados nos comentários."; termList.appendChild(empty); }
+  box.appendChild(termList);
+  const divider = document.createElement("hr"); divider.className = "moderation-divider"; box.appendChild(divider);
+  const reportHeading = document.createElement("h3"); reportHeading.textContent = `Denúncias (${(reports || []).length})`; box.appendChild(reportHeading);
+  if (!reports?.length) { const empty = document.createElement("p"); empty.className = "moderation-muted"; empty.textContent = "Nenhuma denúncia recebida."; box.appendChild(empty); }
+  (reports || []).forEach(report => {
+    const item = document.createElement("article"); item.className = "moderation-report";
+    const title = document.createElement("strong"); title.textContent = report.content_type === "guild" ? `Publicação: ${report.guilds?.name || "Guilda"}` : `Comentário em ${report.guilds?.name || "guilda"}`;
+    const content = document.createElement("p"); content.textContent = report.content_type === "guild" ? "Denúncia de publicação" : (report.guild_comments?.content || "Comentário removido");
+    const reason = document.createElement("small"); reason.textContent = `Motivo: ${report.reason} · ${report.status}`;
+    item.append(title, content, reason);
+    const actions = document.createElement("div"); actions.className = "moderation-actions";
+    const reviewed = document.createElement("button"); reviewed.type = "button"; reviewed.textContent = "Marcar revisada"; reviewed.onclick = async () => { const { error } = await sb.from("guild_reports").update({ status: "reviewed" }).eq("id", report.id); if (error) return alert(error.message); modal.remove(); await openModerationPanel(); };
+    const dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.textContent = "Arquivar"; dismiss.onclick = async () => { const { error } = await sb.from("guild_reports").update({ status: "dismissed" }).eq("id", report.id); if (error) return alert(error.message); modal.remove(); await openModerationPanel(); };
+    actions.append(reviewed, dismiss);
+    if (report.status === "pending") {
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "moderation-danger"; remove.textContent = "Remover conteúdo"; remove.onclick = async () => { if (!confirm("Remover o conteúdo denunciado?")) return; const result = report.content_type === "comment" && report.comment_id ? await sb.from("guild_comments").delete().eq("id", report.comment_id) : await sb.from("guilds").delete().eq("id", report.guild_id); if (result.error) return alert(result.error.message); const update = await sb.from("guild_reports").update({ status: "reviewed" }).eq("id", report.id); if (update.error) return alert(update.error.message); modal.remove(); await openModerationPanel(); await loadGuilds(); };
+      actions.appendChild(remove);
+    }
+    item.appendChild(actions); box.appendChild(item);
+  });
+  const close = document.createElement("button"); close.type = "button"; close.className = "mine-button"; close.textContent = "Fechar"; close.onclick = () => modal.remove(); box.appendChild(close);
+  modal.appendChild(box); modal.addEventListener("click", event => { if (event.target === modal) modal.remove(); }); document.body.appendChild(modal);
 }
 
 function authorizedAdminEmails() {
@@ -1579,6 +1751,20 @@ publicationStyle.textContent = `
 @media(max-width:500px){.publication-card{padding:12px}.publication-guild-identity strong{font-size:18px}}
 `;
 document.head.appendChild(publicationStyle);
+
+const publicationEnhancementStyle = document.createElement("style");
+publicationEnhancementStyle.textContent = `
+.publication-tools{display:flex;gap:10px;flex-wrap:wrap;margin:-12px 0 22px}
+.publication-search,.publication-sort{min-height:42px;background:#101010;border:1px solid #493039;border-radius:8px;color:#eee;padding:10px 12px;font:inherit;outline:none}
+.publication-search{flex:1;min-width:190px}.publication-search:focus,.publication-sort:focus{border-color:#d51b35;box-shadow:0 0 0 2px #d51b3528}
+.comment-author{padding:0;text-align:left}.comment-author .visual-username{font-size:inherit}.comment-author:hover .visual-username{text-decoration:underline;text-underline-offset:3px}
+.comment-actions{display:flex;gap:10px;flex-wrap:wrap;margin:3px 0 0 32px}.comment-actions button{border:0;background:transparent;color:#9298a5;font-size:11px;cursor:pointer;padding:3px 0}.comment-actions button:hover{color:#ff8192}.comment-actions .comment-delete{color:#d97986}
+.guild-comment-reply .comment-author img{width:22px;height:22px}.guild-comment-reply .comment-author{font-size:12px}.guild-comment-reply .comment-author .visual-username{font-size:12px}
+.notification-row{padding:12px 0;border-bottom:1px solid #ffffff18;color:#eee;line-height:1.45}.notification-row small{display:block;color:#8e929e;font-size:11px;margin-top:5px}.notification-row.is-read{opacity:.62}
+@media(max-width:520px){.publication-tools{flex-direction:column}.publication-search,.publication-sort{width:100%}.comment-actions{margin-left:0}}
+.moderation-modal{max-width:650px;max-height:85vh;overflow:auto;text-align:left}.moderation-modal h2{margin-bottom:18px;color:#f06a7e}.moderation-modal h3{margin:16px 0 10px;color:#eee}.moderation-term-form{display:flex;gap:8px}.moderation-term-form input{flex:1;min-width:0;background:#101010;border:1px solid #493039;border-radius:8px;padding:10px;color:#fff}.moderation-term-form button,.moderation-actions button{border:1px solid #69303a;border-radius:7px;background:#241317;color:#fff;padding:8px 10px;cursor:pointer}.moderation-terms{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.moderation-term{display:inline-flex;align-items:center;gap:8px;background:#241317;border:1px solid #69303a;border-radius:20px;padding:5px 10px;color:#f4c6cd;font-size:12px}.moderation-term button{border:0;background:transparent;color:#ff8b9b;font-size:17px;cursor:pointer}.moderation-muted{color:#999;font-size:13px;padding:8px 0}.moderation-divider{border:0;border-top:1px solid #383039;margin:18px 0}.moderation-report{padding:12px 0;border-bottom:1px solid #ffffff18}.moderation-report p{margin:6px 0;color:#ddd;overflow-wrap:anywhere}.moderation-report small{color:#999}.moderation-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.moderation-actions .moderation-danger{background:#501722;border-color:#a92b42}
+`;
+document.head.appendChild(publicationEnhancementStyle);
 
 
 function openDescription(title, text) {

@@ -560,6 +560,11 @@ footer {
       <input type="file" id="guildImage"
       accept="image/*">
 
+      <label>Banner da publicação (opcional)</label>
+      <img id="guildBannerPreview" class="profile-banner-preview" alt="Prévia do banner da publicação" hidden>
+      <input type="file" id="guildBanner" accept="image/*,.gif">
+      <p class="small-note">O banner cobre o cartão com desfoque e camada escura. Até 5 MB.</p>
+
       <label>Nome da guilda</label>
       <input id="guildName" type="text"
       placeholder="Digite o nome..." maxlength="50" required>
@@ -589,6 +594,14 @@ footer {
       </div>
 
     </form>
+  </div>
+</div>
+
+<!-- PERFIL DA GUILDA -->
+<div class="modal" id="guildProfileModal" onclick="if(event.target===this)closeModal('guildProfileModal')">
+  <div class="modal-box">
+    <div class="modal-heading"><h2>Perfil da guilda</h2><button class="close-btn" onclick="closeModal('guildProfileModal')">×</button></div>
+    <div id="guildProfileContent"></div>
   </div>
 </div>
 

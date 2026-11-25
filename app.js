@@ -980,7 +980,7 @@ function profileCardMarkup(publicProfile, options = {}) {
     <div class="discord-profile-main">
       <div class="discord-profile-topline">
         <img class="discord-profile-avatar" src="${escapeHtml(avatar)}" alt="Foto de perfil">
-        <div class="discord-profile-identity"><h3>${escapeHtml(name)}</h3>${roles.length ? `<div class="discord-profile-roles">${roles.map(role => `<span class="discord-profile-role${role.animated ? " is-animated" : ""}" style="--role-gradient:${escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)")}">${escapeHtml(role.emoji || "")} ${escapeHtml(role.name)}</span>`).join("")}</div>` : ""}</div>
+        <div class="discord-profile-identity"><h3>${formatVisualUsername(name, roleLinks)}</h3>${roles.length ? `<div class="discord-profile-roles">${roles.map(role => `<span class="discord-profile-role${role.animated ? " is-animated" : ""}" style="--role-gradient:${escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)")}">${escapeHtml(role.emoji || "")} ${escapeHtml(role.name)}</span>`).join("")}</div>` : ""}</div>
       </div>
       <div class="discord-profile-divider"></div>
       <p class="discord-profile-bio">${escapeHtml(bio)}</p>
@@ -1170,6 +1170,19 @@ function isCreatorProfileUrl(value, platformKey) {
     if (platformKey === "tiktok") return host === "tiktok.com" && parts.length === 1 && /^@[A-Za-z0-9._]{2,24}$/.test(parts[0]);
   } catch (_) {}
   return false;
+}
+
+function formatVisualUsername(username, roleLinks) {
+  const safeName = escapeHtml(username || "Usuário");
+  const primaryRole = (roleLinks || [])
+    .map(link => link?.visual_roles)
+    .find(Boolean);
+
+  if (!primaryRole) return `<span style="color:#fff">${safeName}</span>`;
+
+  const gradient = escapeHtml(primaryRole.gradient || "linear-gradient(135deg,#ff1535,#141414)");
+  const animatedClass = primaryRole.animated ? " is-animated" : "";
+  return `<span class="visual-username${animatedClass}" style="--role-gradient:${gradient}">${safeName}</span>`;
 }
 
 function formatVisualName(username, roleLinks) {

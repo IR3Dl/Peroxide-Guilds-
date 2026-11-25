@@ -17,6 +17,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, 
 let guilds = [];
 let currentPage = 1;
 let selectedImage = null;
+let selectedProfileImage = null;
 let editingId = null;
 let session = null;
 let authMode = "login";
@@ -29,7 +30,7 @@ let sessionRefreshVersion = 0;
 async function loadGuilds() {
   let query = sb
     .from("guilds")
-    .select("*, profiles(id, username, avatar_url, bio, role, blocked, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient)))")
+    .select("*, profiles(id, username, avatar_url, bio, role, blocked, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient,animated)))")
     .order("view_count", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
@@ -165,6 +166,22 @@ function renderGuilds() {
     link.textContent = "Discord";
     link.onclick = () => registerGuildView(guild);
 
+    const contentLinks = Array.isArray(guild.content_links) ? guild.content_links : [];
+    const contentLinksBox = document.createElement("div");
+    contentLinksBox.className = "guild-content-links";
+    contentLinks.forEach(item => {
+      const platform = getContentPlatform(item?.url);
+      if (!platform) return;
+      const contentLink = document.createElement("a");
+      contentLink.className = "content-platform-btn";
+      contentLink.href = item.url;
+      contentLink.target = "_blank";
+      contentLink.rel = "noopener noreferrer";
+      contentLink.innerHTML = `${platform.icon} <span>${platform.name}</span>`;
+      contentLink.onclick = () => registerGuildView(guild);
+      contentLinksBox.appendChild(contentLink);
+    });
+
     const stats = document.createElement("p");
     stats.className = "guild-stats";
 
@@ -190,7 +207,9 @@ function renderGuilds() {
       card.append(moreButton);
     }
 
-    card.append(link, stats);
+    card.append(link);
+    if (contentLinksBox.childElementCount) card.appendChild(contentLinksBox);
+    card.append(stats);
 
     if (canManage(guild)) {
       const actions = document.createElement("div");
@@ -218,6 +237,14 @@ function renderGuilds() {
   } else {
     pagination.style.display = "none";
   }
+}
+
+async function deleteGuild(guild) {
+  if (!canManage(guild)) return;
+  if (!confirm(`Excluir a publicação “${guild.name}”? Essa ação não pode ser desfeita.`)) return;
+  const { error } = await sb.from("guilds").delete().eq("id", guild.id);
+  if (error) return alert(error.message);
+  await loadGuilds();
 }
 
 function closeModal(id) {
@@ -376,18 +403,6 @@ async function refreshSession() {
       adminButton.onclick = openAccounts;
       titleActions.insertBefore(adminButton, titleActions.querySelector(".add-btn"));
 
-      const notificationButton = document.createElement("button");
-      notificationButton.className = "mine-button dynamic-account-btn notification-button";
-      notificationButton.textContent = "🔔 Pedidos";
-      notificationButton.onclick = openRepresentativeRequests;
-      titleActions.insertBefore(notificationButton, titleActions.querySelector(".add-btn"));
-
-      sb.from("representative_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "pending")
-        .then(({ count }) => {
-          if (count) notificationButton.textContent = `🔔 ${count}`;
-        });
     }
 
     await loadGuilds();
@@ -424,17 +439,12 @@ async function openCreate() {
 
   if (profile.blocked) return alert("Sua conta está bloqueada.");
 
-  const representative = (profile.user_visual_roles || []).some(link =>
-    link?.visual_roles?.slug === "representante_guilda"
-  );
-
-  if (!representative) {
-    document.getElementById("representativeRequestModal").style.display = "flex";
-    return;
-  }
-
   editingId = null;
   document.getElementById("guildForm").reset();
+  [1, 2, 3].forEach(number => {
+    const field = document.getElementById(`guildContent${number}`);
+    if (field) field.value = "";
+  });
   selectedImage = null;
   resetImagePreview();
   document.getElementById("createModal").style.display = "flex";
@@ -446,6 +456,11 @@ function openEdit(guild) {
   document.getElementById("guildName").value = guild.name;
   document.getElementById("guildDescription").value = guild.description;
   document.getElementById("guildDiscord").value = guild.discord;
+  const links = Array.isArray(guild.content_links) ? guild.content_links : [];
+  [1, 2, 3].forEach((number, index) => {
+    const field = document.getElementById(`guildContent${number}`);
+    if (field) field.value = links[index]?.url || "";
+  });
   document.getElementById("imagePreview").src = guild.image_url;
   selectedImage = null;
   document.getElementById("createModal").style.display = "flex";
@@ -575,10 +590,22 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
     let imageUrl = null;
     if (selectedImage) imageUrl = await uploadGuildImage(selectedImage);
 
+    const contentLinks = [];
+    for (const number of [1, 2, 3]) {
+      const rawUrl = document.getElementById(`guildContent${number}`)?.value.trim() || "";
+      if (!rawUrl) continue;
+      const platform = getContentPlatform(rawUrl);
+      if (!platform || !isCreatorProfileUrl(rawUrl, platform.key)) {
+        throw new Error(`O link ${number} precisa ser um perfil válido de YouTube, Twitch ou TikTok. Links de vídeos, lives e publicações não são aceitos.`);
+      }
+      contentLinks.push({ platform: platform.key, url: normalizeProfileUrl(rawUrl) });
+    }
+
     const payload = {
       name: document.getElementById("guildName").value.trim(),
       description: document.getElementById("guildDescription").value.trim(),
-      discord
+      discord,
+      content_links: contentLinks
     };
     if (imageUrl) payload.image_url = imageUrl;
 
@@ -605,202 +632,234 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
   }
 });
 
-document.getElementById("representativeRequestForm")?.addEventListener("submit", async event => {
-  event.preventDefault();
-  if (!session) return openLogin();
-
-  const payload = {
-    user_id: session.user.id,
-    guild_name: document.getElementById("requestGuildName").value.trim(),
-    discord: document.getElementById("requestGuildDiscord").value.trim(),
-    info: document.getElementById("requestGuildInfo").value.trim(),
-    status: "pending"
-  };
-
-  const { error } = await sb.from("representative_requests").insert(payload);
-  if (error) return alert(error.message);
-
-  event.target.reset();
-  closeModal("representativeRequestModal");
-  alert("Pedido enviado. Aguarde a aprovação do administrador.");
-  await refreshSession();
-});
-
 async function openAccounts() {
   if (!isVisualRolesAdminSession()) return;
 
   const box = document.getElementById("accountsList");
   box.innerHTML = `
-    <div class="custom-role-builder">
-      <h3>Criar cargo personalizado</h3>
-      <input id="customRoleName" type="text" maxlength="30" placeholder="Nome do cargo">
-      <input id="customRoleEmoji" type="text" maxlength="8" placeholder="Emoji opcional">
-      <div class="role-color-pair">
-        <input id="customRoleColor1" type="color" value="#ff1535" aria-label="Primeira cor">
-        <input id="customRoleColor2" type="color" value="#141414" aria-label="Segunda cor">
-      </div>
-      <button id="createCustomRoleButton" type="button" class="save-btn">Criar cargo</button>
+    <div class="admin-tabs">
+      <button type="button" class="admin-tab active" data-tab="roles">Cargos</button>
+      <button type="button" class="admin-tab" data-tab="users">Usuários</button>
     </div>
-    <input id="adminUserSearch" type="search" placeholder="Pesquisar usuário pelo nome">
-    <div id="adminUserRows"></div>
+    <section id="adminRolesPanel">
+      <div class="custom-role-builder">
+        <h3 id="roleEditorTitle">Criar cargo visual</h3>
+        <label for="customRoleName">Nome</label>
+        <input id="customRoleName" type="text" maxlength="30" placeholder="Ex.: Desenvolvedor">
+        <label for="customRoleEmoji">Emoji (opcional)</label>
+        <input id="customRoleEmoji" type="text" maxlength="8" placeholder="Ex.: ⚔️">
+        <div class="role-color-pair">
+          <label>Cor inicial <input id="customRoleColor1" type="color" value="#ff1535"></label>
+          <label>Cor final <input id="customRoleColor2" type="color" value="#141414"></label>
+        </div>
+        <label class="role-animation-option"><input id="customRoleAnimated" type="checkbox"> Gradiente animado</label>
+        <div id="rolePreview" class="role-preview">Prévia do cargo</div>
+        <div class="role-editor-actions">
+          <button id="saveCustomRoleButton" type="button" class="save-btn">Criar cargo</button>
+          <button id="cancelRoleEditButton" type="button" class="cancel-btn" hidden>Cancelar edição</button>
+        </div>
+      </div>
+      <h3 class="admin-subtitle">Cargos existentes</h3>
+      <div id="adminRoleRows"></div>
+    </section>
+    <section id="adminUsersPanel" hidden>
+      <input id="adminUserSearch" type="search" placeholder="Pesquisar usuário pelo nome">
+      <div id="adminUserRows"></div>
+    </section>
   `;
 
-  const { data: roles, error: rolesError } = await sb
-    .from("visual_roles")
-    .select("id,slug,name,emoji,gradient")
-    .order("name");
-  if (rolesError) return alert(rolesError.message);
+  const [rolesResponse, usersResponse] = await Promise.all([
+    sb.from("visual_roles").select("id,slug,name,emoji,gradient,animated").order("name"),
+    sb.from("profiles").select("id,username,avatar_url,bio,blocked,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated))").order("username")
+  ]);
+  if (rolesResponse.error) return alert(rolesResponse.error.message);
+  if (usersResponse.error) return alert(usersResponse.error.message);
 
-  const { data: users, error: usersError } = await sb
-    .from("profiles")
-    .select("id,username,avatar_url,bio,blocked,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient))")
-    .order("username");
-  if (usersError) return alert(usersError.message);
+  const roles = rolesResponse.data || [];
+  const users = usersResponse.data || [];
+  let editingRoleId = null;
 
-  const createRoleButton = document.getElementById("createCustomRoleButton");
-  createRoleButton.onclick = async () => {
-    const name = document.getElementById("customRoleName").value.trim();
-    const emoji = document.getElementById("customRoleEmoji").value.trim();
-    const colorOne = document.getElementById("customRoleColor1").value;
-    const colorTwo = document.getElementById("customRoleColor2").value;
-    if (name.length < 2) return alert("O nome do cargo precisa ter ao menos 2 caracteres.");
+  const tabs = [...box.querySelectorAll(".admin-tab")];
+  tabs.forEach(tab => tab.addEventListener("click", () => {
+    tabs.forEach(item => item.classList.toggle("active", item === tab));
+    document.getElementById("adminRolesPanel").hidden = tab.dataset.tab !== "roles";
+    document.getElementById("adminUsersPanel").hidden = tab.dataset.tab !== "users";
+  }));
 
-    const { error } = await sb.rpc("create_visual_role", {
-      role_name: name,
-      role_emoji: emoji,
-      color_one: colorOne,
-      color_two: colorTwo
+  const nameInput = document.getElementById("customRoleName");
+  const emojiInput = document.getElementById("customRoleEmoji");
+  const colorOneInput = document.getElementById("customRoleColor1");
+  const colorTwoInput = document.getElementById("customRoleColor2");
+  const animatedInput = document.getElementById("customRoleAnimated");
+  const preview = document.getElementById("rolePreview");
+  const saveButton = document.getElementById("saveCustomRoleButton");
+  const cancelButton = document.getElementById("cancelRoleEditButton");
+
+  function currentGradient() {
+    return `linear-gradient(110deg,${colorOneInput.value},${colorTwoInput.value})`;
+  }
+  function updateRolePreview() {
+    preview.textContent = `${emojiInput.value.trim()} ${nameInput.value.trim() || "Prévia do cargo"}`.trim();
+    preview.style.backgroundImage = currentGradient();
+    preview.classList.toggle("is-animated", animatedInput.checked);
+  }
+  [nameInput, emojiInput, colorOneInput, colorTwoInput, animatedInput].forEach(input => {
+    input.addEventListener("input", updateRolePreview);
+    input.addEventListener("change", updateRolePreview);
+  });
+  updateRolePreview();
+
+  function resetRoleEditor() {
+    editingRoleId = null;
+    nameInput.value = "";
+    emojiInput.value = "";
+    colorOneInput.value = "#ff1535";
+    colorTwoInput.value = "#141414";
+    animatedInput.checked = false;
+    document.getElementById("roleEditorTitle").textContent = "Criar cargo visual";
+    saveButton.textContent = "Criar cargo";
+    cancelButton.hidden = true;
+    updateRolePreview();
+  }
+  cancelButton.onclick = resetRoleEditor;
+
+  async function renderRoleRows() {
+    const roleRows = document.getElementById("adminRoleRows");
+    roleRows.replaceChildren();
+    if (!roles.length) {
+      roleRows.innerHTML = '<p class="small-note">Nenhum cargo visual criado ainda.</p>';
+      return;
+    }
+    roles.forEach(role => {
+      const count = users.filter(user => (user.user_visual_roles || []).some(link => link.role_id === role.id)).length;
+      const row = document.createElement("article");
+      row.className = "admin-role-row";
+      const info = document.createElement("div");
+      info.className = "admin-role-info";
+      const name = document.createElement("strong");
+      name.className = `admin-role-name${role.animated ? " is-animated" : ""}`;
+      name.textContent = `${role.emoji || ""} ${role.name}`.trim();
+      name.style.backgroundImage = role.gradient || "linear-gradient(110deg,#ff1535,#141414)";
+      const members = document.createElement("small");
+      members.textContent = `${count} ${count === 1 ? "membro" : "membros"}`;
+      info.append(name, members);
+      const actions = document.createElement("div");
+      actions.className = "admin-role-actions";
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Editar";
+      edit.onclick = () => {
+        editingRoleId = role.id;
+        nameInput.value = role.name || "";
+        emojiInput.value = role.emoji || "";
+        const colors = [...String(role.gradient || "").matchAll(/#[0-9a-fA-F]{6}/g)].map(match => match[0]);
+        colorOneInput.value = colors[0] || "#ff1535";
+        colorTwoInput.value = colors[1] || "#141414";
+        animatedInput.checked = !!role.animated;
+        document.getElementById("roleEditorTitle").textContent = "Editar cargo visual";
+        saveButton.textContent = "Salvar alterações";
+        cancelButton.hidden = false;
+        updateRolePreview();
+        document.getElementById("adminRolesPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "delete-action";
+      remove.textContent = "Excluir";
+      remove.onclick = async () => {
+        if (!confirm(`Excluir o cargo “${role.name}”? Ele também será removido dos usuários que o possuem.`)) return;
+        const { error } = await sb.rpc("delete_visual_role", { target_role_id: role.id });
+        if (error) return alert(error.message);
+        await openAccounts();
+      };
+      actions.append(edit, remove);
+      row.append(info, actions);
+      roleRows.appendChild(row);
     });
-    if (error) return alert(error.message);
+  }
+
+  saveButton.onclick = async () => {
+    const name = nameInput.value.trim();
+    const emoji = emojiInput.value.trim();
+    if (name.length < 2) return alert("O nome do cargo precisa ter ao menos 2 caracteres.");
+    const gradient = currentGradient();
+    if (editingRoleId) {
+      const { error } = await sb.rpc("update_visual_role", {
+        target_role_id: editingRoleId,
+        role_name: name,
+        role_emoji: emoji,
+        role_gradient: gradient,
+        role_animated: animatedInput.checked
+      });
+      if (error) return alert(error.message);
+    } else {
+      const { error } = await sb.rpc("create_visual_role", {
+        role_name: name,
+        role_emoji: emoji,
+        color_one: colorOneInput.value,
+        color_two: colorTwoInput.value
+      });
+      if (error) return alert(error.message);
+      const { data: created, error: lookupError } = await sb.from("visual_roles").select("id").eq("name", name).maybeSingle();
+      if (lookupError) return alert(lookupError.message);
+      if (created?.id) {
+        const { error: animationError } = await sb.rpc("update_visual_role", {
+          target_role_id: created.id,
+          role_name: name,
+          role_emoji: emoji,
+          role_gradient: gradient,
+          role_animated: animatedInput.checked
+        });
+        if (animationError) return alert(animationError.message);
+      }
+    }
     await openAccounts();
   };
 
   const rows = document.getElementById("adminUserRows");
   const search = document.getElementById("adminUserSearch");
-
   function renderUsers() {
     const term = search.value.trim().toLocaleLowerCase();
     rows.replaceChildren();
-
-    (users || []).filter(user => (user.username || "").toLocaleLowerCase().includes(term))
-      .forEach(user => {
-        const row = document.createElement("div");
-        row.className = "account-row";
-
-        const avatar = document.createElement("img");
-        avatar.src = user.avatar_url || "profile-default.png";
-        avatar.alt = "Foto de perfil";
-
-        const details = document.createElement("div");
-        details.className = "account-row-details";
-
-        const username = document.createElement("strong");
-        username.innerHTML = formatVisualName(user.username || "Usuário", user.user_visual_roles || []);
-        const bio = document.createElement("p");
-        bio.textContent = user.bio || "Sem bio";
-        details.append(username, bio);
-
-        const roleActions = document.createElement("div");
-        roleActions.className = "account-actions";
-        (roles || []).forEach(role => {
-          const assigned = (user.user_visual_roles || []).some(item => item.visual_roles?.slug === role.slug);
-          const action = document.createElement("button");
-          action.textContent = assigned ? `Remover ${role.name}` : `Dar ${role.name}`;
-          action.onclick = async () => {
-            const fn = assigned ? "remove_visual_role" : "assign_visual_role";
-            const { error } = await sb.rpc(fn, { target_profile: user.id, target_role: role.slug });
-            if (error) return alert(error.message);
-            await openAccounts();
-            await loadGuilds();
-          };
-          roleActions.appendChild(action);
-        });
-
-        row.append(avatar, details, roleActions);
-        rows.appendChild(row);
+    users.filter(user => (user.username || "").toLocaleLowerCase().includes(term)).forEach(user => {
+      const row = document.createElement("div");
+      row.className = "account-row";
+      const avatar = document.createElement("img");
+      avatar.src = user.avatar_url || "profile-default.png";
+      avatar.alt = "Foto de perfil";
+      avatar.className = "admin-user-avatar";
+      const details = document.createElement("div");
+      details.className = "account-row-details";
+      const username = document.createElement("strong");
+      username.innerHTML = formatVisualName(user.username || "Usuário", user.user_visual_roles || []);
+      const assignedNames = (user.user_visual_roles || []).map(item => item.visual_roles?.name).filter(Boolean);
+      const currentRoles = document.createElement("p");
+      currentRoles.className = "admin-user-roles";
+      currentRoles.textContent = assignedNames.length ? `Cargos: ${assignedNames.join(", ")}` : "Sem cargos atribuídos";
+      details.append(username, currentRoles);
+      const roleActions = document.createElement("div");
+      roleActions.className = "account-actions";
+      roles.forEach(role => {
+        const assigned = (user.user_visual_roles || []).some(item => item.role_id === role.id);
+        const action = document.createElement("button");
+        action.type = "button";
+        action.textContent = assigned ? `Remover ${role.name}` : `Atribuir ${role.name}`;
+        action.onclick = async () => {
+          const fn = assigned ? "remove_visual_role" : "assign_visual_role";
+          const { error } = await sb.rpc(fn, { target_profile: user.id, target_role: role.slug });
+          if (error) return alert(error.message);
+          await openAccounts();
+          await loadGuilds();
+        };
+        roleActions.appendChild(action);
       });
+      row.append(avatar, details, roleActions);
+      rows.appendChild(row);
+    });
   }
-
   search.addEventListener("input", renderUsers);
   renderUsers();
-  document.getElementById("accountsModal").style.display = "flex";
-}
-
-async function openRepresentativeRequests() {
-  if (!isAdmin()) return;
-
-  const { data, error } = await sb
-    .from("representative_requests")
-    .select("*, profiles(id, username, avatar_url, bio, email)")
-    .eq("status", "pending")
-    .order("created_at", { ascending: false });
-
-  if (error) return alert(error.message);
-
-  const box = document.getElementById("accountsList");
-  box.innerHTML = "";
-
-  if (!data?.length) {
-    box.innerHTML = '<div class="small-note">Nenhum pedido pendente.</div>';
-  }
-
-  (data || []).forEach(request => {
-    const row = document.createElement("div");
-    row.className = "account-row";
-
-    const avatar = document.createElement("img");
-    avatar.src = request.profiles?.avatar_url || "profile-default.png";
-    avatar.style.cssText = "width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid #d51b35";
-
-    const info = document.createElement("div");
-    info.style.cssText = "flex:1;text-align:left";
-
-    const name = document.createElement("strong");
-    name.textContent = request.profiles?.username || "Usuário";
-    const guild = document.createElement("div");
-    guild.textContent = "Guilda: " + request.guild_name;
-    guild.style.cssText = "color:#ddd;margin-top:5px";
-    const discord = document.createElement("a");
-    discord.href = request.discord;
-    discord.target = "_blank";
-    discord.rel = "noopener noreferrer";
-    discord.textContent = request.discord;
-    discord.style.cssText = "display:block;color:#8291ff;margin-top:4px";
-    const extra = document.createElement("p");
-    extra.textContent = request.info;
-    extra.style.cssText = "color:#aaa;font-size:13px;margin-top:8px";
-
-    info.append(name, guild, discord, extra);
-
-    const actions = document.createElement("div");
-    actions.className = "account-actions";
-
-    const approve = document.createElement("button");
-    approve.textContent = "Aprovar representante";
-    approve.onclick = async () => {
-      const { error: roleError } = await sb.rpc("approve_representative_request", { request_uuid: request.id });
-      if (roleError) return alert(roleError.message);
-      await openRepresentativeRequests();
-      await refreshSession();
-    };
-
-    const reject = document.createElement("button");
-    reject.textContent = "Recusar";
-    reject.onclick = async () => {
-      const { error: rejectError } = await sb
-        .from("representative_requests")
-        .update({ status: "rejected" })
-        .eq("id", request.id);
-      if (rejectError) return alert(rejectError.message);
-      await openRepresentativeRequests();
-      await refreshSession();
-    };
-
-    actions.append(approve, reject);
-    row.append(avatar, info, actions);
-    box.appendChild(row);
-  });
-
+  await renderRoleRows();
   document.getElementById("accountsModal").style.display = "flex";
 }
 
@@ -844,7 +903,7 @@ async function openMiniProfile(publicProfile) {
 
     const { data: roles, error: rolesError } = await sb
       .from("visual_roles")
-      .select("slug,name,emoji")
+      .select("slug,name,emoji,gradient,animated")
       .order("name");
     if (rolesError) return alert(rolesError.message);
 
@@ -871,7 +930,7 @@ async function openMiniProfile(publicProfile) {
         await loadGuilds();
         const { data: updatedProfile, error: profileError } = await sb
           .from("profiles")
-          .select("id,username,avatar_url,bio,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient))")
+          .select("id,username,avatar_url,bio,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated))")
           .eq("id", publicProfile.id)
           .single();
         if (profileError) return alert(profileError.message);
@@ -896,6 +955,47 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function normalizeProfileUrl(value) {
+  let url = String(value || "").trim();
+  if (!/^https:\/\//i.test(url)) url = `https://${url}`;
+  return url;
+}
+
+function getContentPlatform(value) {
+  try {
+    const url = new URL(normalizeProfileUrl(value));
+    const host = url.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+    if (["youtube.com", "youtube-nocookie.com"].includes(host)) {
+      return { key: "youtube", name: "YouTube", icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#ff334b" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8ZM9.6 15.8V8.2l6.5 3.8-6.5 3.8Z"/></svg>' };
+    }
+    if (host === "twitch.tv") {
+      return { key: "twitch", name: "Twitch", icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#a970ff" d="M4 2 1.5 6v14h5v3h3l3-3h4l6-6V2H4Zm16 11-3.5 3.5H12l-3 3v-3H4V4h16v9Z"/><path fill="#a970ff" d="M15 6h2v6h-2zM10 6h2v6h-2z"/></svg>' };
+    }
+    if (host === "tiktok.com") {
+      return { key: "tiktok", name: "TikTok", icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M16.6 2c.3 2.5 1.7 4 4.4 4.2v3.2a9 9 0 0 1-4.4-1.3v7.2a6.7 6.7 0 1 1-6.7-6.7c.4 0 .8 0 1.2.1v3.5a3.3 3.3 0 1 0 2.2 3.1V2h3.3Z"/><path fill="#25f4ee" d="M15.2 2v10.1a6.7 6.7 0 0 1-1.9-1.2v6.2a3.3 3.3 0 0 1-5.8 2.1 3.3 3.3 0 0 0 5.9-2V2h1.8Z" opacity=".8"/><path fill="#fe2c55" d="M16.6 2c.3 2.5 1.7 4 4.4 4.2v1.8c-2.7-.2-4.1-1.7-4.4-4.2h-1.4V2h1.4Z" opacity=".9"/></svg>' };
+    }
+  } catch (_) {}
+  return null;
+}
+
+function isCreatorProfileUrl(value, platformKey) {
+  try {
+    const url = new URL(normalizeProfileUrl(value));
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return false;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (platformKey === "youtube") {
+      return host === "youtube.com" && ((parts.length === 1 && /^@[A-Za-z0-9._-]{3,30}$/.test(parts[0])) || (parts.length === 2 && /^(channel|c|user)$/.test(parts[0]) && /^[A-Za-z0-9._-]{2,100}$/.test(parts[1])));
+    }
+    if (platformKey === "twitch") {
+      const reservedTwitchPaths = new Set(["directory", "downloads", "jobs", "p", "settings", "subscriptions", "wallet", "inventory", "turbo", "search", "videos", "clips"]);
+      return host === "twitch.tv" && parts.length === 1 && /^[A-Za-z0-9_]{3,25}$/.test(parts[0]) && !reservedTwitchPaths.has(parts[0].toLowerCase());
+    }
+    if (platformKey === "tiktok") return host === "tiktok.com" && parts.length === 1 && /^@[A-Za-z0-9._]{2,24}$/.test(parts[0]);
+  } catch (_) {}
+  return false;
+}
+
 function formatVisualName(username, roleLinks) {
   const originalName = escapeHtml(username || "Usuário");
   const roles = (roleLinks || [])
@@ -906,13 +1006,16 @@ function formatVisualName(username, roleLinks) {
     return `<span style="color:#fff">${originalName}</span>`;
   }
 
-  return `<span class="visual-username">${originalName}${roles.map(role => {
+  const primaryRole = roles[0];
+  const primaryGradient = escapeHtml(primaryRole.gradient || "linear-gradient(135deg,#ff1535,#141414)");
+  const animatedClass = primaryRole.animated ? " is-animated" : "";
+  const coloredName = `<span class="visual-username${animatedClass}" style="--role-gradient:${primaryGradient}">${originalName}</span>`;
+  return `<span>${coloredName}${roles.map(role => {
     const safeName = escapeHtml(role.name);
     const safeEmoji = escapeHtml(role.emoji || "").trim();
     const emojiText = safeEmoji ? ` ${safeEmoji}` : "";
-    const slug = escapeHtml(role.slug || "custom");
     const gradient = escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)");
-    return `<span class="visual-role visual-role-${slug}" style="--role-gradient:${gradient}"> (${safeName}${emojiText})</span>`;
+    return `<span class="visual-role${role.animated ? " is-animated" : ""}" style="--role-gradient:${gradient}"> (${safeName}${emojiText})</span>`;
   }).join("")}</span>`;
 }
 
@@ -929,23 +1032,42 @@ document.head.appendChild(profileInteractionStyle);
 const visualRoleStyle = document.createElement("style");
 visualRoleStyle.textContent = `
 @keyframes visual-role-gradient-flow{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
-.visual-username{display:inline-block;font-weight:bold;background:linear-gradient(135deg,#fff 0%,#ddd 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
-.visual-role{display:inline-flex;flex-direction:column;vertical-align:baseline;background:var(--role-gradient);background-size:220% 220%;background-position:0% 50%;animation:visual-role-gradient-flow 4s ease-in-out infinite;-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900}
-.visual-role:after{content:"";display:block;width:100%;height:2px;margin-top:1px;border-radius:2px;background:var(--role-gradient);background-size:220% 220%;animation:visual-role-gradient-flow 4s ease-in-out infinite}
-.visual-role-dev{-webkit-text-stroke:.15px rgba(255,255,255,.18)}
+.visual-username{display:inline-block;font-weight:900;background-image:var(--role-gradient);background-size:220% 220%;-webkit-background-clip:text;background-clip:text;color:transparent}
+.visual-username.is-animated,.visual-role.is-animated{animation:visual-role-gradient-flow 4s ease-in-out infinite}
+.visual-role{display:inline-flex;vertical-align:baseline;background-image:var(--role-gradient);background-size:220% 220%;-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:800}
 .account-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid #333}
 .account-row .account-actions{margin:0;justify-content:flex-end;flex-wrap:wrap}
-#adminUserSearch{background:#090909;border:1px solid #393939;border-radius:8px;padding:12px;color:white;font:inherit}
+#adminUserSearch{background:#090909;border:1px solid #393939;border-radius:8px;padding:12px;color:white;font:inherit;margin:8px 0 14px}
 @media(max-width:500px){.account-row{align-items:flex-start;flex-direction:column}.account-row .account-actions{justify-content:flex-start}}
-@media(prefers-reduced-motion:reduce){.visual-role,.visual-role:after{animation:none}}
+@media(prefers-reduced-motion:reduce){.is-animated{animation:none!important}}
 `;
 document.head.appendChild(visualRoleStyle);
 
 const customRoleStyle = document.createElement("style");
 customRoleStyle.textContent = `
-.custom-role-builder{background:#151515;border:1px solid #3a3a3a;border-radius:10px;padding:14px;margin-bottom:14px}
+.custom-role-builder{background:linear-gradient(145deg,#191315,#101010);border:1px solid #493039;border-radius:12px;padding:16px;margin:4px 0 20px}
+.custom-role-builder h3,.admin-subtitle{color:#f06a7e;margin-bottom:10px}
 .custom-role-builder input[type="text"]{width:100%;margin:5px 0;background:#090909;border:1px solid #393939;border-radius:8px;padding:11px;color:white;font:inherit}
-.custom-role-builder input[type="color"]{width:54px;height:54px;border:1px solid #555;border-radius:8px;background:#090909;padding:4px}
+.role-color-pair{display:flex;gap:18px;flex-wrap:wrap}
+.role-color-pair label{flex:1;min-width:120px}
+.role-color-pair input[type="color"]{display:block;width:100%;height:42px;border:1px solid #555;border-radius:8px;background:#090909;padding:3px}
+.role-animation-option{display:flex!important;align-items:center;gap:9px}
+.role-animation-option input{width:auto!important;accent-color:#d51b35}
+.role-preview{padding:13px;border:1px solid #444;border-radius:8px;text-align:center;font-weight:900;background-size:220% 220%;-webkit-background-clip:text;background-clip:text;color:transparent}
+.role-preview.is-animated{animation:visual-role-gradient-flow 4s ease-in-out infinite}
+.role-editor-actions,.admin-role-actions{display:flex;gap:8px;margin-top:12px}
+.role-editor-actions button,.admin-role-actions button{padding:9px 12px;border-radius:7px;cursor:pointer}
+.admin-tabs{display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid #333;padding-bottom:10px}
+.admin-tab{flex:1;padding:11px;border:1px solid #444;border-radius:8px;background:#171717;color:#bbb;font-weight:bold}
+.admin-tab.active{background:linear-gradient(135deg,#a9142b,#281014);border-color:#d51b35;color:white}
+.admin-role-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0;border-bottom:1px solid #303030}
+.admin-role-info{display:flex;flex-direction:column;gap:5px;min-width:0}
+.admin-role-name{width:max-content;max-width:100%;background-size:220% 220%;-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900}
+.admin-role-name.is-animated{animation:visual-role-gradient-flow 4s ease-in-out infinite}
+.admin-role-info small,.admin-user-roles{color:#999;font-size:12px}
+.admin-user-avatar{width:42px;height:42px;flex:0 0 42px;border-radius:50%;object-fit:cover;border:2px solid #d51b35}
+.account-row-details{min-width:0;flex:1}
+@media(max-width:500px){.admin-role-row{align-items:flex-start;flex-direction:column}.admin-role-actions{margin-top:0}}
 `;
 document.head.appendChild(customRoleStyle);
 
@@ -992,6 +1114,9 @@ guildFeaturesStyle.textContent = `
 .guild-like:hover{transform:scale(1.18)}
 .guild-like:active{transform:scale(.82)}
 #showMore{background:#d51b35;color:white;border:none;padding:13px 22px;border-radius:8px;font-weight:bold;cursor:pointer}
+.guild-content-links{display:flex;justify-content:center;flex-wrap:wrap;gap:7px;margin-top:8px}
+.content-platform-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid #393939;border-radius:7px;background:#151515;color:#eee;text-decoration:none;font-size:12px;font-weight:bold}
+.content-platform-btn svg{width:16px;height:16px;display:block;flex:0 0 16px}
 `;
 document.head.appendChild(guildFeaturesStyle);
 

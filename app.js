@@ -687,12 +687,6 @@ async function refreshSession() {
     mineButton.onclick = toggleMine;
     titleActions.insertBefore(mineButton, titleActions.querySelector(".add-btn"));
 
-    const notificationsButton = document.createElement("button");
-    notificationsButton.className = "mine-button dynamic-account-btn notification-button";
-    notificationsButton.textContent = "Notificações";
-    notificationsButton.onclick = openNotifications;
-    titleActions.insertBefore(notificationsButton, titleActions.querySelector(".add-btn"));
-
     if (isAdmin()) {
       const adminButton = document.createElement("button");
       adminButton.className = "mine-button dynamic-account-btn";
@@ -717,24 +711,6 @@ async function refreshSession() {
   }
 
   await loadGuilds();
-}
-
-async function openNotifications() {
-  if (!session) return openLogin();
-  const { data, error } = await sb.from("guild_notifications")
-    .select("id,notification_type,message,created_at,is_read,guild_id")
-    .eq("recipient_id", session.user.id).order("created_at", { ascending: false }).limit(30);
-  if (error) return alert("Não foi possível carregar notificações: " + error.message);
-  const modal = document.createElement("div");
-  modal.className = "modal"; modal.style.display = "flex"; modal.style.zIndex = "10000";
-  const box = document.createElement("div"); box.className = "modal-box";
-  const title = document.createElement("h2"); title.textContent = "Notificações";
-  box.appendChild(title);
-  if (!data?.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Você ainda não tem notificações."; box.appendChild(empty); }
-  (data || []).forEach(item => { const line = document.createElement("div"); line.className = "notification-row" + (item.is_read ? " is-read" : ""); line.textContent = item.message; const time = document.createElement("small"); time.textContent = new Date(item.created_at).toLocaleString("pt-BR"); line.appendChild(time); box.appendChild(line); });
-  const close = document.createElement("button"); close.className = "mine-button"; close.textContent = "Fechar"; close.onclick = () => modal.remove(); box.appendChild(close); modal.appendChild(box); modal.addEventListener("click", event => { if (event.target === modal) modal.remove(); }); document.body.appendChild(modal);
-  const unread = (data || []).filter(item => !item.is_read).map(item => item.id);
-  if (unread.length) await sb.from("guild_notifications").update({ is_read: true }).in("id", unread).eq("recipient_id", session.user.id);
 }
 
 async function openModerationPanel() {
@@ -1667,7 +1643,6 @@ accountAvatarStyle.textContent = `
 .account-avatar-btn{display:inline-flex!important;align-items:center;gap:8px;padding:7px 10px!important;border:1px solid #d51b35!important;border-radius:25px!important;background:linear-gradient(135deg,#171313,#090909)!important}
 .account-avatar-btn img{width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid #d51b35}
 .account-avatar-btn span{font-size:12px;white-space:nowrap}
-.notification-button{border-color:#7cffb2!important;color:#baffd5!important;box-shadow:0 4px 14px rgba(63,190,120,.12)!important}
 .account-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid #333}
 .account-row .account-actions{margin:0;justify-content:flex-end;flex-wrap:wrap}
 @media(max-width:500px){.account-row{align-items:flex-start;flex-direction:column}.account-row .account-actions{justify-content:flex-start}}
@@ -1760,7 +1735,6 @@ publicationEnhancementStyle.textContent = `
 .comment-author{padding:0;text-align:left}.comment-author .visual-username{font-size:inherit}.comment-author:hover .visual-username{text-decoration:underline;text-underline-offset:3px}
 .comment-actions{display:flex;gap:10px;flex-wrap:wrap;margin:3px 0 0 32px}.comment-actions button{border:0;background:transparent;color:#9298a5;font-size:11px;cursor:pointer;padding:3px 0}.comment-actions button:hover{color:#ff8192}.comment-actions .comment-delete{color:#d97986}
 .guild-comment-reply .comment-author img{width:22px;height:22px}.guild-comment-reply .comment-author{font-size:12px}.guild-comment-reply .comment-author .visual-username{font-size:12px}
-.notification-row{padding:12px 0;border-bottom:1px solid #ffffff18;color:#eee;line-height:1.45}.notification-row small{display:block;color:#8e929e;font-size:11px;margin-top:5px}.notification-row.is-read{opacity:.62}
 @media(max-width:520px){.publication-tools{flex-direction:column}.publication-search,.publication-sort{width:100%}.comment-actions{margin-left:0}}
 .moderation-modal{max-width:650px;max-height:85vh;overflow:auto;text-align:left}.moderation-modal h2{margin-bottom:18px;color:#f06a7e}.moderation-modal h3{margin:16px 0 10px;color:#eee}.moderation-term-form{display:flex;gap:8px}.moderation-term-form input{flex:1;min-width:0;background:#101010;border:1px solid #493039;border-radius:8px;padding:10px;color:#fff}.moderation-term-form button,.moderation-actions button{border:1px solid #69303a;border-radius:7px;background:#241317;color:#fff;padding:8px 10px;cursor:pointer}.moderation-terms{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.moderation-term{display:inline-flex;align-items:center;gap:8px;background:#241317;border:1px solid #69303a;border-radius:20px;padding:5px 10px;color:#f4c6cd;font-size:12px}.moderation-term button{border:0;background:transparent;color:#ff8b9b;font-size:17px;cursor:pointer}.moderation-muted{color:#999;font-size:13px;padding:8px 0}.moderation-divider{border:0;border-top:1px solid #383039;margin:18px 0}.moderation-report{padding:12px 0;border-bottom:1px solid #ffffff18}.moderation-report p{margin:6px 0;color:#ddd;overflow-wrap:anywhere}.moderation-report small{color:#999}.moderation-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.moderation-actions .moderation-danger{background:#501722;border-color:#a92b42}
 `;

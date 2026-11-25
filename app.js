@@ -18,6 +18,7 @@ let guilds = [];
 let currentPage = 1;
 let selectedImage = null;
 let selectedProfileImage = null;
+let selectedProfileBanner = null;
 let editingId = null;
 let session = null;
 let authMode = "login";
@@ -30,7 +31,7 @@ let sessionRefreshVersion = 0;
 async function loadGuilds() {
   let query = sb
     .from("guilds")
-    .select("*, profiles(id, username, avatar_url, bio, role, blocked, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient,animated)))")
+    .select("*, profiles(id, username, avatar_url, bio, banner_url, social_url, is_private, role, blocked, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient,animated)))")
     .order("view_count", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
@@ -261,8 +262,14 @@ function openProfileEdit() {
   if (!profile) return;
   document.getElementById("publicUsername").value = profile.username || "";
   document.getElementById("publicBio").value = profile.bio || "";
+  document.getElementById("publicSocial").value = profile.social_url || "";
   document.getElementById("profileImagePreview").src = profile.avatar_url || "profile-default.png";
+  document.getElementById("profileBannerPreview").src = profile.banner_url || "";
+  document.getElementById("profileBannerPreview").hidden = !profile.banner_url;
+  document.getElementById("publicProfilePrivate").checked = !!profile.is_private;
   selectedProfileImage = null;
+  selectedProfileBanner = null;
+  renderProfileLivePreview();
 }
 
 function openProfile() {
@@ -375,7 +382,7 @@ async function refreshSession() {
   if (session) {
     const { data: account, error } = await sb
       .from("profiles")
-      .select("*")
+      .select("*, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient,animated))")
       .eq("id", session.user.id)
       .maybeSingle();
 
@@ -472,19 +479,41 @@ function resetImagePreview() {
 }
 
 document.getElementById("profileForm")?.addEventListener("submit", async event => {
-  event.preventEvent?.();
   event.preventDefault();
   if (!session) return openLogin();
 
   const username = document.getElementById("publicUsername").value.trim();
   const bio = document.getElementById("publicBio").value.trim();
+  const socialRaw = document.getElementById("publicSocial").value.trim();
   if (username.length < 3) return alert("Use pelo menos 3 caracteres.");
+  if (!/^[\p{L}\p{N} _.-]{3,30}$/u.test(username)) return alert("Use de 3 a 30 caracteres: letras, números, espaços, ponto, hífen ou underline.");
+
+  const { data: nameTaken, error: nameCheckError } = await sb.from("profiles")
+    .select("id").ilike("username", username).neq("id", session.user.id).limit(1);
+  if (nameCheckError) return alert("Não foi possível verificar o nome: " + nameCheckError.message);
+  if (nameTaken?.length) return alert("Esse nome de perfil já está em uso.");
+
+  let socialUrl = null;
+  if (socialRaw) {
+    socialUrl = normalizeProfileUrl(socialRaw);
+    if (!getSocialPlatform(socialUrl)) {
+      return alert("Use um link válido de Instagram, X, YouTube, Twitch, TikTok, Discord ou GitHub.");
+    }
+  }
 
   try {
-    const update = { username, bio };
+    const update = {
+      username,
+      bio,
+      social_url: socialUrl,
+      is_private: document.getElementById("publicProfilePrivate").checked
+    };
 
     if (selectedProfileImage) {
       update.avatar_url = await uploadProfileImage(selectedProfileImage);
+    }
+    if (selectedProfileBanner) {
+      update.banner_url = await uploadProfileBanner(selectedProfileBanner);
     }
 
     const { error } = await sb
@@ -497,7 +526,9 @@ document.getElementById("profileForm")?.addEventListener("submit", async event =
     profilePromptShown = true;
     closeModal("profileModal");
     selectedProfileImage = null;
+    selectedProfileBanner = null;
     await refreshSession();
+    if (profile) await openMiniProfile(profile);
   } catch (error) {
     alert(error.message || "Não foi possível salvar o perfil.");
   }
@@ -542,9 +573,57 @@ document.getElementById("profileImage")?.addEventListener("change", event => {
   const reader = new FileReader();
   reader.onload = () => {
     document.getElementById("profileImagePreview").src = reader.result;
+    renderProfileLivePreview();
   };
   reader.readAsDataURL(file);
 });
+
+document.getElementById("profileBanner")?.addEventListener("change", event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    alert("Escolha um arquivo de imagem válido.");
+    event.target.value = "";
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    alert("Escolha um banner de até 5 MB.");
+    event.target.value = "";
+    return;
+  }
+  selectedProfileBanner = file;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const preview = document.getElementById("profileBannerPreview");
+    preview.src = reader.result;
+    preview.hidden = false;
+    renderProfileLivePreview();
+  };
+  reader.readAsDataURL(file);
+});
+
+["publicUsername", "publicBio", "publicSocial", "publicProfilePrivate"].forEach(id => {
+  const field = document.getElementById(id);
+  if (!field) return;
+  field.addEventListener("input", renderProfileLivePreview);
+  field.addEventListener("change", renderProfileLivePreview);
+});
+
+async function uploadProfileBanner(file) {
+  const extension = (file.name.split(".").pop() || "jpg")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+  const path = `${session.user.id}/banner.${extension}`;
+  const { error } = await sb.storage
+    .from("profile-images")
+    .upload(path, file, {
+      cacheControl: "3600",
+      upsert: true,
+      contentType: file.type
+    });
+  if (error) throw error;
+  return sb.storage.from("profile-images").getPublicUrl(path).data.publicUrl;
+}
 
 async function uploadProfileImage(file) {
   const extension = (file.name.split(".").pop() || "jpg")
@@ -601,8 +680,16 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
       contentLinks.push({ platform: platform.key, url: normalizeProfileUrl(rawUrl) });
     }
 
+    const guildName = document.getElementById("guildName").value.trim();
+    if (guildName.length < 3) throw new Error("O nome da guilda precisa ter pelo menos 3 caracteres.");
+    let nameQuery = sb.from("guilds").select("id").ilike("name", guildName).limit(1);
+    if (editingId) nameQuery = nameQuery.neq("id", editingId);
+    const { data: duplicateGuilds, error: duplicateGuildError } = await nameQuery;
+    if (duplicateGuildError) throw duplicateGuildError;
+    if (duplicateGuilds?.length) throw new Error("Já existe uma guilda com esse nome.");
+
     const payload = {
-      name: document.getElementById("guildName").value.trim(),
+      name: guildName,
       description: document.getElementById("guildDescription").value.trim(),
       discord,
       content_links: contentLinks
@@ -670,7 +757,7 @@ async function openAccounts() {
 
   const [rolesResponse, usersResponse] = await Promise.all([
     sb.from("visual_roles").select("id,slug,name,emoji,gradient,animated").order("name"),
-    sb.from("profiles").select("id,username,avatar_url,bio,blocked,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated))").order("username")
+    sb.from("profiles").select("id,username,avatar_url,bio,banner_url,social_url,blocked,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated))").order("username")
   ]);
   if (rolesResponse.error) return alert(rolesResponse.error.message);
   if (usersResponse.error) return alert(usersResponse.error.message);
@@ -869,26 +956,117 @@ sb.auth.onAuthStateChange(async (event, session) => {
 
 loadGuilds();
 
-async function openMiniProfile(publicProfile) {
-  const box = document.getElementById("miniProfileContent");
+function profileCardMarkup(publicProfile, options = {}) {
   const avatar = publicProfile?.avatar_url || "profile-default.png";
+  const banner = publicProfile?.banner_url || "";
   const name = publicProfile?.username || "Usuário";
   const bio = publicProfile?.bio || "Nenhuma descrição definida.";
+  const socialUrl = publicProfile?.social_url || "";
+  const social = socialUrl ? getSocialPlatform(socialUrl) : null;
+  const roleLinks = publicProfile?.user_visual_roles || [];
+  const roles = roleLinks.map(link => link?.visual_roles).filter(Boolean);
+  const socialIcons = {
+    instagram: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17.5" cy="6.5" r="1.2" fill="currentColor"/></svg>',
+    x: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.8 5.7 22H2.5l7.3-8.4L1.8 2h6.5l4.4 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z"/></svg>',
+    youtube: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M23 7a3 3 0 0 0-2.1-2.1C19 4.4 12 4.4 12 4.4s-7 0-8.9.5A3 3 0 0 0 1 7a31 31 0 0 0-.5 5 31 31 0 0 0 .5 5 3 3 0 0 0 2.1 2.1c1.9.5 8.9.5 8.9.5s7 0 8.9-.5A3 3 0 0 0 23 17a31 31 0 0 0 .5-5 31 31 0 0 0-.5-5ZM10 15.5v-7l6 3.5-6 3.5Z"/></svg>',
+    twitch: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 2h18v13l-5 5h-4l-3 3H7v-3H2V5l2-3Zm1 3v12h4v3l3-3h5l3-3V5H5Zm5 2h2v6h-2V7Zm5 0h2v6h-2V7Z"/></svg>',
+    tiktok: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.6 2c.3 2.5 1.7 4 4.4 4.2v3.2a9 9 0 0 1-4.4-1.3v7.2a6.7 6.7 0 1 1-6.7-6.7c.4 0 .8 0 1.2.1v3.5a3.3 3.3 0 1 0 2.2 3.1V2h3.3Z"/></svg>',
+    discord: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.7 5.1A18.2 18.2 0 0 0 15.2 3.7l-.6 1.2a16.7 16.7 0 0 0-5.2 0l-.6-1.2a18.2 18.2 0 0 0-4.5 1.4C1.4 9.3.6 13.4 1 17.5a18.3 18.3 0 0 0 5.5 2.8l1.2-2a11.8 11.8 0 0 1-1.9-.9l.5-.4a13 13 0 0 0 11.4 0l.5.4a11.8 11.8 0 0 1-1.9.9l1.2 2a18.3 18.3 0 0 0 5.5-2.8c.5-4.8-.8-8.9-3.3-12.4Z"/></svg>',
+    github: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .8a11.2 11.2 0 0 0-3.5 21.8c.6.1.8-.3.8-.6v-2.1c-3.1.7-3.8-1.3-3.8-1.3-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 .1.7 2.1 3.8 1.5.1-.7.4-1.2.7-1.5-2.5-.3-5.1-1.2-5.1-5.5 0-1.2.4-2.1 1.1-2.9-.1-.3-.5-1.4.1-2.9 0 0 .9-.3 3 1.1a10.4 10.4 0 0 1 5.5 0c2.1-1.4 3-1.1 3-1.1.6 1.5.2 2.6.1 2.9.7.8 1.1 1.7 1.1 2.9 0 4.3-2.6 5.2-5.1 5.5.4.3.8 1 .8 2v3c0 .3.2.7.8.6A11.2 11.2 0 0 0 12 .8Z"/></svg>'
+  };
+  const bannerStyle = banner ? ` style="background-image:url('${escapeHtml(banner)}')"` : "";
+  return `<article class="discord-profile-card">
+    <div class="discord-profile-banner${banner ? " has-banner" : ""}"${bannerStyle}></div>
+    <div class="discord-profile-main">
+      <div class="discord-profile-topline">
+        <img class="discord-profile-avatar" src="${escapeHtml(avatar)}" alt="Foto de perfil">
+        <div class="discord-profile-identity"><h3>${escapeHtml(name)}</h3>${roles.length ? `<div class="discord-profile-roles">${roles.map(role => `<span class="discord-profile-role${role.animated ? " is-animated" : ""}" style="--role-gradient:${escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)")}">${escapeHtml(role.emoji || "")} ${escapeHtml(role.name)}</span>`).join("")}</div>` : ""}</div>
+      </div>
+      <div class="discord-profile-divider"></div>
+      <p class="discord-profile-bio">${escapeHtml(bio)}</p>
+      ${social && socialUrl ? `<a class="discord-profile-social" href="${escapeHtml(socialUrl)}" target="_blank" rel="noopener noreferrer"><span class="social-logo social-${social.key}">${socialIcons[social.key] || ""}</span><span><small>REDE SOCIAL</small><strong>${social.name}</strong></span><span class="social-external">↗</span></a>` : ""}
+    </div>
+  </article>`;
+}
 
+function renderProfileLivePreview() {
+  const target = document.getElementById("profileLivePreview");
+  if (!target) return;
+  const avatar = document.getElementById("profileImagePreview")?.src || profile?.avatar_url || "profile-default.png";
+  const bannerPreview = document.getElementById("profileBannerPreview");
+  const banner = selectedProfileBanner ? (bannerPreview?.src || profile?.banner_url || "") : (profile?.banner_url || "");
+  const socialRaw = document.getElementById("publicSocial")?.value.trim() || "";
+  const normalizedSocial = socialRaw ? normalizeProfileUrl(socialRaw) : "";
+  const draft = {
+    username: document.getElementById("publicUsername")?.value.trim() || "Seu nome",
+    avatar_url: avatar,
+    banner_url: banner,
+    bio: document.getElementById("publicBio")?.value || "Sua biografia aparecerá aqui.",
+    social_url: normalizedSocial,
+    user_visual_roles: profile?.user_visual_roles || []
+  };
+  target.innerHTML = profileCardMarkup(draft, { preview: true });
+}
+
+async function exportProfileCard(format, cardElement) {
+  if (!cardElement) return alert("Cartão de perfil não encontrado.");
+  if (typeof window.html2canvas !== "function") return alert("A ferramenta de exportação ainda não carregou. Atualize a página e tente novamente.");
+  const canvas = await window.html2canvas(cardElement, { backgroundColor: "#20232b", scale: 2, useCORS: true, allowTaint: false });
+  if (format === "png") {
+    const link = document.createElement("a");
+    link.download = `perfil-${(profile?.username || "usuario").replace(/[^a-z0-9_-]/gi, "-")}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+    return;
+  }
+  if (typeof window.GIF !== "function") return alert("A ferramenta de GIF ainda não carregou. Atualize a página e tente novamente.");
+  const gif = new window.GIF({ workers: 2, quality: 10, width: canvas.width, height: canvas.height, workerScript: "https://cdn.jsdelivr.net/npm/gif.js.optimized/dist/gif.worker.js" });
+  const frames = 16;
+  for (let index = 0; index < frames; index++) {
+    const frame = await window.html2canvas(cardElement, { backgroundColor: "#20232b", scale: 2, useCORS: true, allowTaint: false });
+    gif.addFrame(frame, { delay: 120, copy: true });
+    await new Promise(resolve => setTimeout(resolve, 120));
+  }
+  gif.on("finished", blob => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = `perfil-${(profile?.username || "usuario").replace(/[^a-z0-9_-]/gi, "-")}.gif`;
+    link.href = url;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  });
+  gif.render();
+}
+
+async function openMiniProfile(publicProfile) {
+  const box = document.getElementById("miniProfileContent");
   const ownsProfile = session?.user?.id && publicProfile?.id === session.user.id;
+  if (publicProfile?.is_private && !ownsProfile) {
+    box.innerHTML = `<div class="discord-profile-private"><div class="discord-profile-private-icon">🔒</div><h3>Perfil privado</h3><p>Este usuário escolheu manter o perfil fechado.</p></div>`;
+    document.getElementById("miniProfileModal").style.display = "flex";
+    return;
+  }
+  const roleLinks = publicProfile?.user_visual_roles || [];
+  box.innerHTML = profileCardMarkup(publicProfile);
 
-  box.innerHTML = `
-    <img src="${escapeHtml(avatar)}" alt="Foto de perfil" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:3px solid #d51b35;margin-bottom:14px">
-    <h3 style="margin-bottom:10px">${formatVisualName(name, publicProfile?.user_visual_roles || [])}</h3>
-    <p style="color:#bbb;line-height:1.5;white-space:pre-wrap">${escapeHtml(bio)}</p>
-  `;
+  const exportActions = document.createElement("div");
+  exportActions.className = "discord-profile-export-actions";
+  const pngButton = document.createElement("button");
+  pngButton.type = "button";
+  pngButton.textContent = "Exportar PNG";
+  pngButton.onclick = () => exportProfileCard("png", box.querySelector(".discord-profile-card"));
+  const gifButton = document.createElement("button");
+  gifButton.type = "button";
+  gifButton.textContent = "Exportar GIF";
+  gifButton.onclick = () => exportProfileCard("gif", box.querySelector(".discord-profile-card"));
+  exportActions.append(pngButton, gifButton);
+  box.appendChild(exportActions);
 
   if (ownsProfile) {
     const editButton = document.createElement("button");
     editButton.type = "button";
-    editButton.className = "mine-button";
+    editButton.className = "mine-button discord-profile-edit";
     editButton.textContent = "Editar perfil";
-    editButton.style.marginTop = "18px";
     editButton.onclick = () => {
       closeModal("miniProfileModal");
       openProfileEdit();
@@ -900,50 +1078,48 @@ async function openMiniProfile(publicProfile) {
     const roleActions = document.createElement("div");
     roleActions.className = "mini-role-actions";
     roleActions.style.marginTop = "16px";
-
-    const { data: roles, error: rolesError } = await sb
-      .from("visual_roles")
-      .select("slug,name,emoji,gradient,animated")
-      .order("name");
+    const { data: roles, error: rolesError } = await sb.from("visual_roles").select("slug,name,emoji,gradient,animated").order("name");
     if (rolesError) return alert(rolesError.message);
-
-    (roles || []).forEach(role => {
-      const assigned = (publicProfile.user_visual_roles || []).some(link =>
-        link?.visual_roles?.slug === role.slug
-      );
-
+    roles.forEach(role => {
+      const assigned = roleLinks.some(link => link?.visual_roles?.slug === role.slug);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "mine-button";
       button.style.cssText = "margin:5px;padding:8px 10px";
       const label = `${role.name}${role.emoji ? ` ${role.emoji}` : ""}`;
       button.textContent = assigned ? `Remover ${label}` : `Dar ${label}`;
-
       button.onclick = async () => {
         const fn = assigned ? "remove_visual_role" : "assign_visual_role";
-        const { error } = await sb.rpc(fn, {
-          target_profile: publicProfile.id,
-          target_role: role.slug
-        });
-
+        const { error } = await sb.rpc(fn, { target_profile: publicProfile.id, target_role: role.slug });
         if (error) return alert(error.message);
         await loadGuilds();
-        const { data: updatedProfile, error: profileError } = await sb
-          .from("profiles")
-          .select("id,username,avatar_url,bio,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated))")
-          .eq("id", publicProfile.id)
-          .single();
+        const { data: updatedProfile, error: profileError } = await sb.from("profiles")
+          .select("id,username,avatar_url,bio,banner_url,social_url,is_private,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated))")
+          .eq("id", publicProfile.id).single();
         if (profileError) return alert(profileError.message);
         await openMiniProfile(updatedProfile);
       };
-
       roleActions.appendChild(button);
     });
-
     box.appendChild(roleActions);
   }
-
   document.getElementById("miniProfileModal").style.display = "flex";
+}
+
+function getSocialPlatform(value) {
+  try {
+    const url = new URL(normalizeProfileUrl(value));
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+    if (["instagram.com"].includes(host)) return { key: "instagram", name: "Instagram", short: "IG" };
+    if (["x.com", "twitter.com"].includes(host)) return { key: "x", name: "X", short: "𝕏" };
+    if (["youtube.com", "youtu.be", "youtube-nocookie.com"].includes(host)) return { key: "youtube", name: "YouTube", short: "▶" };
+    if (["twitch.tv"].includes(host)) return { key: "twitch", name: "Twitch", short: "TW" };
+    if (["tiktok.com"].includes(host)) return { key: "tiktok", name: "TikTok", short: "♪" };
+    if (["discord.com", "discord.gg"].includes(host)) return { key: "discord", name: "Discord", short: "DC" };
+    if (["github.com"].includes(host)) return { key: "github", name: "GitHub", short: "GH" };
+  } catch (_) {}
+  return null;
 }
 
 function escapeHtml(value) {
@@ -1104,6 +1280,38 @@ accountMenuStyle.textContent = `
 .account-menu button:hover{background:#24171a;color:#ff6b7d}
 `;
 document.head.appendChild(accountMenuStyle);
+
+const discordProfileStyle = document.createElement("style");
+discordProfileStyle.textContent = `
+#miniProfileModal .modal-box{max-width:470px;padding:0;overflow:hidden;background:#17191f;border:1px solid #353842}
+#miniProfileModal .modal-heading{padding:18px 20px 0;margin-bottom:14px}
+#miniProfileModal .modal-heading h2{color:#fff;font-size:18px}
+.discord-profile-card{overflow:hidden;text-align:left;background:#20232b;border-radius:12px;margin:0 14px 14px;border:1px solid #353842}
+.discord-profile-banner{height:126px;background:linear-gradient(125deg,#50101d,#17191f 60%,#3b111b);background-position:center;background-size:cover;background-color:#25202a}
+.discord-profile-banner.has-banner{background-repeat:no-repeat}
+.discord-profile-main{position:relative;padding:0 18px 20px}
+.discord-profile-topline{display:flex;align-items:flex-end;gap:13px;margin-top:-62px;position:relative;z-index:2;min-height:100px}
+.discord-profile-avatar{width:92px;height:92px;flex:0 0 92px;object-fit:cover;border-radius:50%;border:7px solid #20232b;background:#17191f;position:relative}
+.discord-profile-identity{padding-bottom:5px;overflow-wrap:anywhere;min-width:0}
+.discord-profile-identity h3{font-size:22px;color:#fff;margin:0 0 8px}
+.discord-profile-roles{display:flex;flex-wrap:wrap;gap:7px;margin-top:0}
+.discord-profile-role{display:inline-flex;align-items:center;padding:6px 10px;border-radius:7px;background-image:var(--role-gradient);background-size:220% 220%;color:#fff;font-size:12px;font-weight:800;box-shadow:inset 0 0 0 1px #ffffff22}
+.discord-profile-role.is-animated{animation:visual-role-gradient-flow 4s ease-in-out infinite}
+.discord-profile-divider{height:1px;background:#383b45;margin:16px 0}
+.discord-profile-bio{color:#e0e2e8;font-size:14px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;min-height:22px}
+.discord-profile-social{display:flex;align-items:center;gap:11px;margin-top:16px;padding:10px 12px;border:1px solid #3c404c;border-radius:9px;background:#191c23;color:#fff;text-decoration:none}
+.social-logo{width:36px;height:36px;display:grid;place-items:center;border-radius:9px;background:#343844;color:#fff;flex:0 0 36px}.social-logo svg{width:21px;height:21px}
+.social-instagram{background:linear-gradient(135deg,#7b35c8,#e1306c,#ff9a44)}.social-x{background:#050505}.social-youtube{background:#e62117}.social-twitch{background:#6841c8}.social-tiktok{background:#101014;box-shadow:inset 2px 0 #25f4ee,inset -2px 0 #fe2c55}.social-discord{background:#5865f2}.social-github{background:#34383f}
+.discord-profile-social span:nth-child(2){display:flex;flex-direction:column;gap:2px;min-width:0}.discord-profile-social small{font-size:9px;letter-spacing:1px;color:#969cab}.discord-profile-social strong{font-size:13px}.social-external{margin-left:auto;color:#aeb3bf;font-size:18px}
+.discord-profile-edit{display:block;margin:0 14px 16px;width:calc(100% - 28px)}
+#profileLivePreview{margin:12px 0 18px;padding:12px;background:#101010;border:1px solid #393939;border-radius:10px}
+#profileLivePreview .discord-profile-card{margin:0}
+.discord-profile-export-actions{display:flex;gap:8px;margin:0 14px 12px}
+.discord-profile-export-actions button{flex:1;border:1px solid #555;background:#292d37;color:#fff;border-radius:8px;padding:10px;cursor:pointer;font-weight:700}
+.discord-profile-private,.discord-profile-private-note{text-align:center;padding:22px;color:#d8dbe4}.discord-profile-private-icon{font-size:32px}.discord-profile-private p{color:#aeb3bf;margin-top:8px}
+@media(max-width:500px){#miniProfileModal .modal-box{max-width:100%;padding:0}.discord-profile-banner{height:112px}.discord-profile-topline{gap:9px}.discord-profile-avatar{width:82px;height:82px;flex-basis:82px}.discord-profile-identity h3{font-size:19px}}
+`;
+document.head.appendChild(discordProfileStyle);
 
 const guildFeaturesStyle = document.createElement("style");
 guildFeaturesStyle.textContent = `

@@ -967,6 +967,10 @@ function profileCardMarkup(publicProfile, options = {}) {
   const social = socialUrl ? getSocialPlatform(socialUrl) : null;
   const roleLinks = publicProfile?.user_visual_roles || [];
   const roles = roleLinks.map(link => link?.visual_roles).filter(Boolean);
+  const primaryRole = roles[0] || null;
+  const profileNameMarkup = primaryRole
+    ? `<h3 class="visual-username${primaryRole.animated ? " is-animated" : ""}" style="--role-gradient:${escapeHtml(primaryRole.gradient || "linear-gradient(135deg,#ff1535,#141414)")}">${escapeHtml(name)}</h3>`
+    : `<h3>${escapeHtml(name)}</h3>`;
   const socialIcons = {
     instagram: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17.5" cy="6.5" r="1.2" fill="currentColor"/></svg>',
     x: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.8 5.7 22H2.5l7.3-8.4L1.8 2h6.5l4.4 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z"/></svg>',
@@ -982,7 +986,7 @@ function profileCardMarkup(publicProfile, options = {}) {
     <div class="discord-profile-main">
       <div class="discord-profile-topline">
         <img class="discord-profile-avatar" src="${escapeHtml(avatar)}" alt="Foto de perfil">
-        <div class="discord-profile-identity"><h3>${escapeHtml(name)}</h3>${roles.length ? `<div class="discord-profile-roles">${roles.map(role => `<span class="discord-profile-role${role.animated ? " is-animated" : ""}" style="--role-gradient:${escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)")}">${escapeHtml(role.emoji || "")} ${escapeHtml(role.name)}</span>`).join("")}</div>` : ""}</div>
+        <div class="discord-profile-identity">${profileNameMarkup}${roles.length ? `<div class="discord-profile-roles">${roles.map(role => `<span class="discord-profile-role${role.animated ? " is-animated" : ""}" style="--role-gradient:${escapeHtml(role.gradient || "linear-gradient(135deg,#ff1535,#141414)")}">${escapeHtml(role.emoji || "")} ${escapeHtml(role.name)}</span>`).join("")}</div>` : ""}</div>
       </div>
       <div class="discord-profile-divider"></div>
       <p class="discord-profile-bio">${escapeHtml(bio)}</p>
@@ -1295,7 +1299,7 @@ discordProfileStyle.textContent = `
 .discord-profile-topline{display:flex;align-items:flex-end;gap:13px;margin-top:-62px;position:relative;z-index:2;min-height:100px}
 .discord-profile-avatar{width:92px;height:92px;flex:0 0 92px;object-fit:cover;border-radius:50%;border:7px solid #20232b;background:#17191f;position:relative}
 .discord-profile-identity{padding-bottom:5px;overflow-wrap:anywhere;min-width:0}
-.discord-profile-identity h3{font-size:22px;color:#fff;margin:0 0 8px}
+.discord-profile-identity h3{font-size:22px;color:#fff;margin:0 0 8px}.discord-profile-identity h3.visual-username{color:transparent;background-image:var(--role-gradient);background-size:220% 220%;-webkit-background-clip:text;background-clip:text}
 .discord-profile-roles{display:flex;flex-wrap:wrap;gap:7px;margin-top:0}
 .discord-profile-role{display:inline-flex;align-items:center;padding:6px 10px;border-radius:7px;background-image:var(--role-gradient);background-size:220% 220%;color:#fff;font-size:12px;font-weight:800;box-shadow:inset 0 0 0 1px #ffffff22}
 .discord-profile-role.is-animated{animation:visual-role-gradient-flow 4s ease-in-out infinite}

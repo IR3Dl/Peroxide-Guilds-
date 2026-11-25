@@ -297,7 +297,7 @@ function renderGuilds() {
       moreButton.type = "button";
       moreButton.className = "description-more-btn";
       moreButton.textContent = "Ver mais";
-      moreButton.onclick = () => openDescription(guild.name, descriptionText);
+      moreButton.onclick = () => openGuildProfile(guild);
       content.append(moreButton);
     }
     content.append(link);

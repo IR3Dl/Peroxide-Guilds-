@@ -280,10 +280,6 @@ async function submitAuth() {
   if (authMode === "create") {
     const confirmPassword = document.getElementById("authPasswordConfirm").value;
     if (password !== confirmPassword) return alert("As senhas não coincidem.");
-    if (localAccountEmail(username) === "red@peroxide.local") {
-      return alert("O nome ReD é reservado para a conta do criador. Entre com essa conta ou peça ao administrador para provisioná-la.");
-    }
-
     const { data: existing } = await sb
       .from("profiles")
       .select("id")

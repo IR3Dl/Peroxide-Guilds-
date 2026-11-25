@@ -26,6 +26,8 @@ let profile = null;
 let mineOnly = false;
 let displayedCount = 10;
 let likedGuildIds = new Set();
+let commentCounts = new Map();
+let selectedGuildBanner = null;
 let sessionRefreshVersion = 0;
 
 async function loadGuilds() {
@@ -52,6 +54,20 @@ async function loadGuilds() {
       .select("guild_id")
       .eq("user_id", session.user.id);
     (likes || []).forEach(like => likedGuildIds.add(like.guild_id));
+  }
+
+  commentCounts = new Map();
+  if (guilds.length) {
+    const { data: comments, error: commentsError } = await sb
+      .from("guild_comments")
+      .select("guild_id")
+      .in("guild_id", guilds.map(item => item.id))
+      .is("parent_id", null);
+    if (!commentsError) {
+      (comments || []).forEach(item => commentCounts.set(item.guild_id, (commentCounts.get(item.guild_id) || 0) + 1));
+    } else if (commentsError.code !== "42P01") {
+      console.warn("Não foi possível carregar a contagem de comentários:", commentsError.message);
+    }
   }
 
   renderGuilds();
@@ -128,29 +144,43 @@ function renderGuilds() {
 
   visibleGuilds.forEach(guild => {
     const card = document.createElement("article");
-    card.className = "guild-card";
+    card.className = "guild-card publication-card";
 
-    const avatar = document.createElement("img");
-    avatar.className = "guild-avatar";
-    avatar.src = guild.image_url;
-    avatar.alt = "Imagem da guilda";
-
-    const title = document.createElement("h3");
-    title.textContent = guild.name;
+    const cover = document.createElement("div");
+    cover.className = "publication-cover";
+    if (guild.banner_url) cover.style.setProperty("--publication-banner", `url("${String(guild.banner_url).replaceAll('"', '%22')}")`);
 
     const author = document.createElement("button");
     author.type = "button";
-    author.className = "author-profile";
-
+    author.className = "author-profile publication-author";
     const authorAvatar = document.createElement("img");
     authorAvatar.src = guild.profiles?.avatar_url || "profile-default.png";
-    authorAvatar.alt = "Foto de perfil";
-
+    authorAvatar.alt = "Foto de perfil de quem publicou";
     const authorName = document.createElement("span");
-    authorName.innerHTML = "Publicado por " + formatVisualName(guild.profiles?.username || "Usuário", guild.profiles?.user_visual_roles || []);
+    authorName.innerHTML = formatVisualName(guild.profiles?.username || "Usuário", guild.profiles?.user_visual_roles || []);
+    const authorMeta = document.createElement("small");
+    authorMeta.textContent = "publicou";
+    const authorText = document.createElement("span");
+    authorText.className = "publication-author-text";
+    authorText.append(authorName, authorMeta);
+    author.append(authorAvatar, authorText);
+    author.onclick = () => guild.profiles && openMiniProfile(guild.profiles);
 
-    author.append(authorAvatar, authorName);
-    author.onclick = () => openMiniProfile(guild.profiles);
+    const identity = document.createElement("button");
+    identity.type = "button";
+    identity.className = "publication-guild-identity";
+    const avatar = document.createElement("img");
+    avatar.className = "guild-avatar";
+    avatar.src = guild.image_url || "profile-default.png";
+    avatar.alt = `Foto da guilda ${guild.name}`;
+    const title = document.createElement("strong");
+    title.textContent = guild.name;
+    const guildLabel = document.createElement("small");
+    guildLabel.textContent = "Guilda";
+    const identityText = document.createElement("span");
+    identityText.append(title, guildLabel);
+    identity.append(avatar, identityText);
+    identity.onclick = () => openGuildProfile(guild);
 
     const descriptionText = guild.description || "";
     const description = document.createElement("p");
@@ -164,7 +194,7 @@ function renderGuilds() {
     link.href = guild.discord;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.textContent = "Discord";
+    link.textContent = "Entrar no Discord";
     link.onclick = () => registerGuildView(guild);
 
     const contentLinks = Array.isArray(guild.content_links) ? guild.content_links : [];
@@ -183,34 +213,47 @@ function renderGuilds() {
       contentLinksBox.appendChild(contentLink);
     });
 
-    const stats = document.createElement("p");
-    stats.className = "guild-stats";
-
+    const stats = document.createElement("div");
+    stats.className = "guild-stats publication-stats";
     const views = document.createElement("span");
     const viewCount = guild.view_count || 0;
     views.textContent = `👁 ${viewCount}${viewCount >= 100 ? " 🔥" : ""}`;
-
     const likeButton = document.createElement("button");
     likeButton.type = "button";
     likeButton.className = "guild-like";
     likeButton.textContent = (likedGuildIds.has(guild.id) ? "♥ " : "♡ ") + (guild.like_count || 0);
     likeButton.onclick = () => toggleGuildLike(guild);
+    const commentToggle = document.createElement("button");
+    commentToggle.type = "button";
+    commentToggle.className = "comments-toggle";
+    commentToggle.textContent = `◯ ${commentCounts.get(guild.id) || 0} comentários`;
+    stats.append(views, likeButton, commentToggle);
 
-    stats.append(views, likeButton);
-    card.append(avatar, title, author, description);
-
+    const content = document.createElement("div");
+    content.className = "publication-content";
+    content.append(identity, description);
     if (descriptionText.length > 180) {
       const moreButton = document.createElement("button");
       moreButton.type = "button";
       moreButton.className = "description-more-btn";
       moreButton.textContent = "Ver mais";
       moreButton.onclick = () => openDescription(guild.name, descriptionText);
-      card.append(moreButton);
+      content.append(moreButton);
     }
+    content.append(link);
+    if (contentLinksBox.childElementCount) content.appendChild(contentLinksBox);
 
-    card.append(link);
-    if (contentLinksBox.childElementCount) card.appendChild(contentLinksBox);
-    card.append(stats);
+    const commentsPanel = document.createElement("section");
+    commentsPanel.className = "guild-comments-panel";
+    commentsPanel.hidden = true;
+    commentToggle.onclick = async () => {
+      commentsPanel.hidden = !commentsPanel.hidden;
+      if (!commentsPanel.hidden && !commentsPanel.dataset.loaded) {
+        await loadGuildComments(guild, commentsPanel);
+      }
+    };
+
+    card.append(cover, author, content, stats, commentsPanel);
 
     if (canManage(guild)) {
       const actions = document.createElement("div");
@@ -238,6 +281,149 @@ function renderGuilds() {
   } else {
     pagination.style.display = "none";
   }
+}
+
+
+async function openGuildProfile(guild) {
+  const modal = document.getElementById("guildProfileModal");
+  const box = document.getElementById("guildProfileContent");
+  if (!modal || !box) return;
+  box.replaceChildren();
+  const banner = document.createElement("div");
+  banner.className = "guild-profile-modal-banner";
+  if (guild.banner_url) banner.style.backgroundImage = `linear-gradient(rgba(0,0,0,.48),rgba(0,0,0,.72)),url("${guild.banner_url}")`;
+  const avatar = document.createElement("img");
+  avatar.className = "guild-profile-modal-avatar";
+  avatar.src = guild.image_url || "profile-default.png";
+  avatar.alt = "Foto da guilda";
+  const title = document.createElement("h2");
+  title.textContent = guild.name;
+  const description = document.createElement("p");
+  description.textContent = guild.description || "";
+  const discord = document.createElement("a");
+  discord.className = "discord-btn";
+  discord.href = guild.discord;
+  discord.target = "_blank";
+  discord.rel = "noopener noreferrer";
+  discord.textContent = "Entrar no Discord";
+  box.append(banner, avatar, title, description, discord);
+  const links = Array.isArray(guild.content_links) ? guild.content_links : [];
+  links.forEach(item => {
+    const platform = getContentPlatform(item?.url);
+    if (!platform) return;
+    const a = document.createElement("a");
+    a.className = "content-platform-btn";
+    a.href = item.url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.innerHTML = `${platform.icon} <span>${platform.name}</span>`;
+    box.appendChild(a);
+  });
+  modal.style.display = "flex";
+}
+
+async function loadGuildComments(guild, panel) {
+  panel.dataset.loaded = "1";
+  panel.innerHTML = '<p class="comments-loading">Carregando comentários...</p>';
+  const { data, error } = await sb.from("guild_comments")
+    .select("id,guild_id,user_id,parent_id,content,created_at,profiles(id,username,avatar_url,user_visual_roles(role_id,visual_roles(slug,name,emoji,gradient,animated)))")
+    .eq("guild_id", guild.id).order("created_at", { ascending: true });
+  if (error) {
+    panel.dataset.loaded = "";
+    panel.innerHTML = `<p class="comments-error">Não foi possível carregar: ${escapeHtml(error.message)}</p>`;
+    return;
+  }
+  renderGuildComments(guild, panel, data || []);
+}
+
+function renderGuildComments(guild, panel, comments) {
+  panel.replaceChildren();
+  const heading = document.createElement("strong");
+  heading.className = "comments-heading";
+  heading.textContent = "Comentários";
+  panel.appendChild(heading);
+  const roots = comments.filter(item => !item.parent_id);
+  roots.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "guild-comment";
+    const user = document.createElement("button");
+    user.type = "button";
+    user.className = "comment-author";
+    const avatar = document.createElement("img");
+    avatar.src = item.profiles?.avatar_url || "profile-default.png";
+    avatar.alt = "";
+    const name = document.createElement("span");
+    name.innerHTML = formatVisualName(item.profiles?.username || "Usuário", item.profiles?.user_visual_roles || []);
+    user.append(avatar, name);
+    user.onclick = () => item.profiles && openMiniProfile(item.profiles);
+    const body = document.createElement("p");
+    body.textContent = item.content;
+    row.append(user, body);
+    if (session) {
+      const reply = document.createElement("button");
+      reply.type = "button";
+      reply.className = "comment-reply-btn";
+      reply.textContent = "Responder";
+      reply.onclick = () => submitGuildComment(guild, panel, item.id);
+      row.appendChild(reply);
+    }
+    comments.filter(reply => reply.parent_id === item.id).forEach(replyItem => {
+      const replyRow = document.createElement("div");
+      replyRow.className = "guild-comment guild-comment-reply";
+      const replyName = document.createElement("strong");
+      replyName.textContent = replyItem.profiles?.username || "Usuário";
+      const replyBody = document.createElement("p");
+      replyBody.textContent = replyItem.content;
+      replyRow.append(replyName, replyBody);
+      row.appendChild(replyRow);
+    });
+    panel.appendChild(row);
+  });
+  const form = document.createElement("form");
+  form.className = "guild-comment-form";
+  const input = document.createElement("textarea");
+  input.maxLength = 1000;
+  input.placeholder = session ? "Escreva um comentário..." : "Entre na sua conta para comentar";
+  input.disabled = !session;
+  const send = document.createElement("button");
+  send.type = "submit";
+  send.textContent = "Comentar";
+  send.disabled = !session;
+  form.append(input, send);
+  form.onsubmit = async event => {
+    event.preventDefault();
+    await submitGuildComment(guild, panel, null, input.value);
+  };
+  panel.appendChild(form);
+  if (!session) {
+    const login = document.createElement("button");
+    login.type = "button";
+    login.className = "comment-login-btn";
+    login.textContent = "Entrar";
+    login.onclick = openLogin;
+    panel.appendChild(login);
+  }
+}
+
+async function submitGuildComment(guild, panel, parentId = null, suppliedText = null) {
+  if (!session) return openLogin();
+  let content = suppliedText;
+  if (parentId) content = prompt("Sua resposta:");
+  content = String(content || "").trim();
+  if (!content) return;
+  const { error } = await sb.from("guild_comments").insert({
+    guild_id: guild.id,
+    user_id: session.user.id,
+    parent_id: parentId,
+    content
+  });
+  if (error) return alert(error.message);
+  if (!parentId) {
+    commentCounts.set(guild.id, (commentCounts.get(guild.id) || 0) + 1);
+    const countButton = panel.parentElement?.querySelector(".comments-toggle");
+    if (countButton) countButton.textContent = `◯ ${commentCounts.get(guild.id)} comentários`;
+  }
+  await loadGuildComments(guild, panel);
 }
 
 async function deleteGuild(guild) {
@@ -453,6 +639,11 @@ async function openCreate() {
     if (field) field.value = "";
   });
   selectedImage = null;
+  selectedGuildBanner = null;
+  const bannerInput = document.getElementById("guildBanner");
+  if (bannerInput) bannerInput.value = "";
+  const bannerPreview = document.getElementById("guildBannerPreview");
+  if (bannerPreview) { bannerPreview.hidden = true; bannerPreview.removeAttribute("src"); }
   resetImagePreview();
   document.getElementById("createModal").style.display = "flex";
 }
@@ -469,7 +660,12 @@ function openEdit(guild) {
     if (field) field.value = links[index]?.url || "";
   });
   document.getElementById("imagePreview").src = guild.image_url;
+  const bannerPreview = document.getElementById("guildBannerPreview");
+  if (bannerPreview) { bannerPreview.src = guild.banner_url || ""; bannerPreview.hidden = !guild.banner_url; }
+  const bannerInput = document.getElementById("guildBanner");
+  if (bannerInput) bannerInput.value = "";
   selectedImage = null;
+  selectedGuildBanner = null;
   document.getElementById("createModal").style.display = "flex";
 }
 
@@ -657,6 +853,31 @@ async function uploadGuildImage(file) {
   return sb.storage.from("guild-images").getPublicUrl(path).data.publicUrl;
 }
 
+async function uploadGuildBanner(file) {
+  const extension = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const path = `${session.user.id}/banners/${Date.now()}.${extension}`;
+  const { error } = await sb.storage.from("guild-images").upload(path, file, {
+    cacheControl: "0", upsert: false, contentType: file.type
+  });
+  if (error) throw error;
+  return sb.storage.from("guild-images").getPublicUrl(path).data.publicUrl;
+}
+
+document.getElementById("guildBanner")?.addEventListener("change", event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) { alert("Escolha uma imagem válida para o banner."); event.target.value = ""; return; }
+  if (file.size > 5 * 1024 * 1024) { alert("O banner deve ter até 5 MB."); event.target.value = ""; return; }
+  selectedGuildBanner = file;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const preview = document.getElementById("guildBannerPreview");
+    preview.src = reader.result;
+    preview.hidden = false;
+  };
+  reader.readAsDataURL(file);
+});
+
 document.getElementById("guildForm")?.addEventListener("submit", async function(event) {
   event.preventDefault();
   if (!session) return openLogin();
@@ -669,7 +890,9 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
 
   try {
     let imageUrl = null;
+    let bannerUrl = null;
     if (selectedImage) imageUrl = await uploadGuildImage(selectedImage);
+    if (selectedGuildBanner) bannerUrl = await uploadGuildBanner(selectedGuildBanner);
 
     const contentLinks = [];
     for (const number of [1, 2, 3]) {
@@ -697,6 +920,7 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
       content_links: contentLinks
     };
     if (imageUrl) payload.image_url = imageUrl;
+    if (bannerUrl) payload.banner_url = bannerUrl;
 
     if (editingId) {
       const guild = guilds.find(item => item.id === editingId);
@@ -713,6 +937,7 @@ document.getElementById("guildForm")?.addEventListener("submit", async function(
     editingId = null;
     this.reset();
     selectedImage = null;
+    selectedGuildBanner = null;
     resetImagePreview();
     closeModal("createModal");
     await loadGuilds();
@@ -1333,6 +1558,28 @@ guildFeaturesStyle.textContent = `
 .content-platform-btn svg{width:16px;height:16px;display:block;flex:0 0 16px}
 `;
 document.head.appendChild(guildFeaturesStyle);
+
+const publicationStyle = document.createElement("style");
+publicationStyle.textContent = `
+.publication-card{position:relative;isolation:isolate;text-align:left;padding:14px;display:flex;flex-direction:column;gap:12px;background:transparent;border:1px solid #343741;border-radius:14px;overflow:hidden}
+.publication-cover{position:absolute;inset:0;z-index:0;pointer-events:none;background:linear-gradient(135deg,#28232b,#11151d)}
+.publication-cover:before{content:"";position:absolute;inset:-12px;background-image:var(--publication-banner);background-size:cover;background-position:center;filter:blur(13px);opacity:.58;transform:scale(1.06)}
+.publication-cover:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(8,9,13,.70),rgba(12,13,18,.91) 48%,rgba(12,13,18,.97))}
+.publication-author{position:relative;z-index:1;display:flex;align-items:center;gap:9px;margin:0;padding:0;text-align:left;color:#fff;width:max-content;max-width:100%}
+.publication-author img{width:40px;height:40px;flex:0 0 40px;border-radius:50%;object-fit:cover;border:2px solid #d51b35}
+.publication-author-text{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0}.publication-author-text small{font-size:11px;color:#aeb3bf}
+.publication-guild-identity{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:transparent;border:0;color:#fff;cursor:pointer;padding:2px 0}
+.publication-guild-identity .guild-avatar{width:58px;height:58px;flex:0 0 58px;border-radius:50%;object-fit:cover;border:2px solid #d51b35;margin:0}
+.publication-guild-identity span{display:flex;flex-direction:column;gap:3px;min-width:0}.publication-guild-identity strong{font-size:20px;overflow-wrap:anywhere}.publication-guild-identity small{font-size:11px;color:#aeb3bf}
+.publication-content{position:relative;z-index:1;display:flex;flex-direction:column;align-items:flex-start;gap:10px}.publication-content .guild-description{color:#f0f1f5!important;min-height:0;max-height:90px;text-align:left}.publication-content .discord-btn{margin-top:4px}
+.publication-stats{position:relative;z-index:1;justify-content:flex-start!important;border-top:1px solid #ffffff20;padding-top:10px;margin-top:0!important;flex-wrap:wrap}
+.comments-toggle,.comment-reply-btn,.comment-login-btn{border:0;background:transparent;color:#c5cad5;cursor:pointer;font:inherit;font-size:13px;padding:5px}.comments-toggle:hover,.comment-reply-btn:hover{color:#ff8192}
+.guild-comments-panel{position:relative;z-index:1;border-top:1px solid #ffffff20;padding-top:12px;color:#e6e8ee}.guild-comments-panel[hidden]{display:none}.comments-heading{display:block;margin-bottom:10px}.guild-comment{padding:9px 0;border-bottom:1px solid #ffffff12}.comment-author{display:flex;align-items:center;gap:7px;background:none;border:0;color:#fff;cursor:pointer;font-weight:bold}.comment-author img{width:25px;height:25px;border-radius:50%;object-fit:cover}.guild-comment p{margin:6px 0;color:#d3d6df;white-space:pre-wrap;overflow-wrap:anywhere}.guild-comment-reply{margin:8px 0 0 24px;padding:8px;border-left:2px solid #9b3346;background:#ffffff08;border-radius:0 7px 7px 0}.guild-comment-reply strong{font-size:12px;color:#f18b9a}.guild-comment-form{display:flex;flex-direction:column;gap:7px;margin-top:12px}.guild-comment-form textarea{width:100%;min-height:65px;resize:vertical;background:#101116;border:1px solid #3b3e49;border-radius:8px;padding:9px;color:#fff;font:inherit}.guild-comment-form button{align-self:flex-end;background:#b91f38;border:0;border-radius:7px;padding:8px 13px;color:#fff;font-weight:bold;cursor:pointer}.guild-comment-form button:disabled{opacity:.45}.comments-loading,.comments-error{font-size:12px;color:#b9bdc8}
+#guildProfileModal .modal-box{max-width:500px;text-align:center;overflow:hidden}#guildProfileContent{display:flex;flex-direction:column;align-items:center;gap:12px}#guildProfileContent p{white-space:pre-wrap;text-align:left;align-self:stretch;color:#ddd;line-height:1.6}.guild-profile-modal-banner{height:125px;width:calc(100% + 36px);margin:-18px -18px 0;background:linear-gradient(135deg,#451522,#17191f);background-size:cover;background-position:center;filter:none}.guild-profile-modal-avatar{width:90px;height:90px;border-radius:50%;object-fit:cover;border:5px solid #20232b;margin-top:-56px;z-index:1}
+@media(max-width:500px){.publication-card{padding:12px}.publication-guild-identity strong{font-size:18px}}
+`;
+document.head.appendChild(publicationStyle);
+
 
 function openDescription(title, text) {
   document.getElementById("descriptionModalTitle").textContent = title;

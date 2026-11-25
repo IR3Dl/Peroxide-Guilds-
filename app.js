@@ -19,6 +19,7 @@ let currentPage = 1;
 let selectedImage = null;
 let editingId = null;
 let session = null;
+let authMode = "login";
 let profile = null;
 let mineOnly = false;
 let displayedCount = 10;

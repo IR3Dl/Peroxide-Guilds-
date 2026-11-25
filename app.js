@@ -26,7 +26,6 @@ let profile = null;
 let mineOnly = false;
 let displayedCount = 10;
 let likedGuildIds = new Set();
-let likedProfileIds = new Set();
 let commentCounts = new Map();
 let selectedGuildBanner = null;
 let sessionRefreshVersion = 0;
@@ -35,9 +34,11 @@ let guildSortMode = "recent";
 let publicationToolsReady = false;
 
 async function loadGuilds() {
+  // Carrega as publicações separadamente dos perfis para que uma falha
+  // no relacionamento profiles não esconda todas as guildas da página.
   let query = sb
     .from("guilds")
-    .select("*, profiles(id, username, avatar_url, bio, banner_url, social_url, is_private, role, blocked, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient,animated)))")
+    .select("*")
     .order("view_count", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
@@ -45,10 +46,27 @@ async function loadGuilds() {
 
   const { data, error } = await query;
   if (error) {
-    console.error(error);
+    console.error("Erro ao carregar publicações:", error);
     guilds = [];
   } else {
     guilds = data || [];
+
+    const profileIds = [...new Set(guilds.map(item => item.user_id).filter(Boolean))];
+    if (profileIds.length) {
+      const { data: profiles, error: profilesError } = await sb
+        .from("profiles")
+        .select("id, username, avatar_url, bio, banner_url, social_url, is_private, role, blocked, user_visual_roles(role_id, visual_roles(slug,name,emoji,gradient,animated))")
+        .in("id", profileIds);
+
+      if (profilesError) {
+        console.warn("Não foi possível carregar os perfis das publicações:", profilesError);
+      } else {
+        const profilesById = new Map((profiles || []).map(item => [item.id, item]));
+        guilds.forEach(item => {
+          item.profiles = profilesById.get(item.user_id) || null;
+        });
+      }
+    }
   }
 
   likedGuildIds = new Set();
@@ -375,19 +393,7 @@ async function loadGuildComments(guild, panel) {
     panel.innerHTML = `<p class="comments-error">Não foi possível carregar: ${escapeHtml(error.message)}</p>`;
     return;
   }
-  const commentIds = (data || []).map(item => item.id);
-  let commentLikes = [];
-  if (commentIds.length) {
-    const { data: likes, error: likesError } = await sb.from("guild_comment_likes")
-      .select("comment_id,user_id").in("comment_id", commentIds);
-    if (likesError) {
-      panel.dataset.loaded = "";
-      panel.innerHTML = `<p class="comments-error">Não foi possível carregar curtidas: ${escapeHtml(likesError.message)}</p>`;
-      return;
-    }
-    commentLikes = likes || [];
-  }
-  renderGuildComments(guild, panel, data || [], commentLikes);
+  renderGuildComments(guild, panel, data || []);
 }
 
 function canModerateGuildComments(guild) {
@@ -434,29 +440,7 @@ function addCommentActions(row, guild, panel, comment) {
   if (actions.childElementCount) row.appendChild(actions);
 }
 
-async function toggleCommentLike(guild, panel, comment, commentLikes) {
-  if (!session) return openLogin();
-  const existing = commentLikes.find(item => item.comment_id === comment.id && item.user_id === session.user.id);
-  const result = existing
-    ? await sb.from("guild_comment_likes").delete().eq("comment_id", comment.id).eq("user_id", session.user.id)
-    : await sb.from("guild_comment_likes").insert({ comment_id: comment.id, user_id: session.user.id });
-  if (result.error) return alert("Não foi possível curtir o comentário: " + result.error.message);
-  await loadGuildComments(guild, panel);
-}
-
-function appendCommentLikeButton(row, guild, panel, comment, commentLikes) {
-  const count = commentLikes.filter(item => item.comment_id === comment.id).length;
-  const liked = !!session && commentLikes.some(item => item.comment_id === comment.id && item.user_id === session.user.id);
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "comment-like-btn";
-  button.textContent = `${liked ? "♥" : "♡"} ${count}`;
-  button.setAttribute("aria-label", liked ? "Remover curtida" : "Curtir comentário");
-  button.onclick = () => toggleCommentLike(guild, panel, comment, commentLikes);
-  row.appendChild(button);
-}
-
-function renderGuildComments(guild, panel, comments, commentLikes = []) {
+function renderGuildComments(guild, panel, comments) {
   panel.replaceChildren();
   const heading = document.createElement("strong");
   heading.className = "comments-heading";
@@ -470,9 +454,8 @@ function renderGuildComments(guild, panel, comments, commentLikes = []) {
     const body = document.createElement("p");
     body.textContent = item.content;
     row.appendChild(body);
-    appendCommentLikeButton(row, guild, panel, item, commentLikes);
     addCommentActions(row, guild, panel, item);
-    if (session && guild.user_id === session.user.id) {
+    if (session) {
       const reply = document.createElement("button");
       reply.type = "button"; reply.className = "comment-reply-btn"; reply.textContent = "Responder";
       reply.onclick = () => submitGuildComment(guild, panel, item.id);
@@ -485,7 +468,6 @@ function renderGuildComments(guild, panel, comments, commentLikes = []) {
       const replyBody = document.createElement("p");
       replyBody.textContent = replyItem.content;
       replyRow.appendChild(replyBody);
-      appendCommentLikeButton(replyRow, guild, panel, replyItem, commentLikes);
       addCommentActions(replyRow, guild, panel, replyItem);
       row.appendChild(replyRow);
     });
@@ -542,7 +524,6 @@ async function reportGuildContent(guild, commentId, contentType) {
 
 async function submitGuildComment(guild, panel, parentId = null, suppliedText = null) {
   if (!session) return openLogin();
-  if (parentId && guild.user_id !== session.user.id) return alert("Somente o dono da publicação pode responder aos comentários.");
   let content = suppliedText;
   if (parentId) content = prompt("Sua resposta:");
   content = String(content || "").trim();
@@ -1465,26 +1446,6 @@ async function openMiniProfile(publicProfile) {
   }
   const roleLinks = publicProfile?.user_visual_roles || [];
   box.innerHTML = profileCardMarkup(publicProfile);
-
-  if (session && publicProfile?.id && !ownsProfile) {
-    const [{ count, error: countError }, { data: ownLike, error: ownLikeError }] = await Promise.all([
-      sb.from("profile_likes").select("id", { count: "exact", head: true }).eq("profile_id", publicProfile.id),
-      sb.from("profile_likes").select("id").eq("profile_id", publicProfile.id).eq("user_id", session.user.id).maybeSingle()
-    ]);
-    if (countError || ownLikeError) return alert("Não foi possível carregar as curtidas do perfil: " + (countError || ownLikeError).message);
-    const likeButton = document.createElement("button");
-    likeButton.type = "button";
-    likeButton.className = "mine-button profile-like-btn";
-    likeButton.textContent = `${ownLike ? "♥ Curtido" : "♡ Curtir perfil"} · ${count || 0}`;
-    likeButton.onclick = async () => {
-      const response = ownLike
-        ? await sb.from("profile_likes").delete().eq("profile_id", publicProfile.id).eq("user_id", session.user.id)
-        : await sb.from("profile_likes").insert({ profile_id: publicProfile.id, user_id: session.user.id });
-      if (response.error) return alert("Não foi possível atualizar a curtida: " + response.error.message);
-      await openMiniProfile(publicProfile);
-    };
-    box.appendChild(likeButton);
-  }
 
   const exportActions = document.createElement("div");
   exportActions.className = "discord-profile-export-actions";
